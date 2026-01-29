@@ -1,0 +1,126 @@
+
+export enum CategoryType {
+  INCOME = 'Ingresos',
+  FIXED_EXPENSE = 'Gastos Fijos',
+  VARIABLE_EXPENSE = 'Gastos Variables',
+  DEBT = 'Deudas',
+  SAVINGS = 'Ahorros'
+}
+
+export enum TransactionStatus {
+  PAID = 'Pagado',
+  PENDING = 'Pendiente',
+  OVERDUE = 'Vencido'
+}
+
+export enum PaymentMethod {
+  CASH = 'Efectivo',
+  DEBIT = 'Débito',
+  CREDIT = 'Crédito',
+  TRANSFER = 'Transferencia',
+  FIXED_TERM = 'Plazo Fijo',
+  INVESTMENT = 'Inversión'
+}
+
+export interface InstallmentPurchase {
+  id: string;
+  name: string;
+  totalAmount: number;
+  installments: number;
+  startDate: string; // YYYY-MM
+  category: CategoryType;
+  tag: string;
+  cardName?: string;
+}
+
+export interface SavingsGoal {
+  id: string;
+  name: string;
+  targetAmount: number;
+  currentAmount: number;
+  deadline?: string; // YYYY-MM
+  icon: string;
+}
+
+export interface BudgetEntry {
+  id: string;
+  name: string;
+  amount: number;
+  category: CategoryType;
+  tag: string;
+  order?: number;
+  date: string;
+  status: TransactionStatus;
+  paymentMethod: PaymentMethod;
+  cardName?: string; // Nombre de la tarjeta si es crédito
+  financingPlan?: string; // Plan de financiación seleccionado (ej. Plan Z, Cuota Simple)
+  installmentRef?: string; // ID de la compra en cuotas si aplica
+  currentInstallment?: number;
+  totalInstallments?: number;
+  subEntries?: BudgetEntry[]; // Para agrupaciones
+  deleted?: boolean;
+  goalId?: string; // ID de la meta de ahorro asociada
+  maturityDate?: string; // Fecha de disponibilidad/vencimiento (para ahorros/inversiones)
+  originalAmount?: number; // Monto en moneda original
+  currency?: string; // Moneda (ARS, USD, EUR, etc.)
+  exchangeRateEstimated?: number; // Cotización estimada
+  exchangeRateActual?: number; // Cotización real/fecha de compra
+  is_provisional?: boolean;
+}
+
+export interface MonthlyBudget {
+  month: string;
+  entries: BudgetEntry[];
+}
+
+export interface AppConfig {
+  currency: string;
+  userName: string;
+  categories: Record<CategoryType, string[]>;
+  creditCards?: string[];
+}
+
+export interface CategoryBudget {
+  category: CategoryType;
+  amount: number;
+}
+
+export interface AppState {
+  budgets: Record<string, MonthlyBudget>;
+  goals: SavingsGoal[];
+  installmentPurchases: InstallmentPurchase[];
+  categoryBudgets: Record<CategoryType, number>;
+  currentMonth: string;
+  config: AppConfig;
+}
+
+// Added ParsingResult to define the structure of data returned by the Gemini parsing service
+export interface ParsingResult {
+  items: {
+    name: string;
+    amount: number;
+    category: CategoryType;
+    tag: string;
+  }[];
+}
+
+export const DEFAULT_CATEGORY_MAP: Record<CategoryType, string[]> = {
+  [CategoryType.INCOME]: ['Sueldo', 'Aguinaldo', 'Extras', 'Ventas', 'Inversiones', 'Regalos'],
+  [CategoryType.FIXED_EXPENSE]: [
+    'Alquiler / Cuota Préstamo', 'Expensas', 'Servicios (Luz, Gas, Agua)',
+    'Internet', 'Teléfono / Celular', 'TV / Streaming',
+    'Colegio', 'Cuota del Auto', 'Seguros', 'Prepaga / Obra Social',
+    'Impuestos', 'Gimnasio', 'Cochera', 'Patente'
+  ],
+  [CategoryType.VARIABLE_EXPENSE]: [
+    'Supermercado', 'Comida / Delivery', 'Salidas / Ocio', 'Transporte / Combustible',
+    'Farmacia / Salud', 'Ropa', 'Mantenimiento Hogar', 'Mascotas',
+    'Regalos', 'Cuidado Personal', 'Deportes', 'Educación / Cursos',
+    'Vacaciones', 'Varios'
+  ],
+  [CategoryType.DEBT]: ['Préstamo Personal', 'Tarjeta de Crédito', 'Deuda Familiar'],
+  [CategoryType.SAVINGS]: ['Fondo de Emergencia', 'Ahorro Dólares', 'Inversiones', 'Vacaciones', 'Auto Nuevo']
+};
+
+// Added DEFAULT_TAGS to provide suggested tags for classification in the AI prompt
+export const DEFAULT_TAGS = Object.values(DEFAULT_CATEGORY_MAP).flat();
