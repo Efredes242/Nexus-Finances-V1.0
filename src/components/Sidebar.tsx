@@ -135,10 +135,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className={`mt-auto transition-all duration-300 ${desktopSidebarOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none h-0'}`}>
         {/* Footer Links - Only visible when expanded */}
         {desktopSidebarOpen && (
-          <div className="flex flex-wrap gap-x-4 gap-y-2 px-6 mb-2">
             <a href="/privacy" className="text-[10px] text-slate-500 hover:text-blue-400 transition-colors">Privacidad</a>
             <a href="/terminos" className="text-[10px] text-slate-500 hover:text-blue-400 transition-colors">Términos</a>
-          </div>
+            <span className="text-[9px] text-slate-600 block w-full mt-1">v1.2.0 (Party)</span>
         )}
 
         <div className="glass p-6 rounded-3xl border border-blue-500/10 relative group mx-4 mb-4">
