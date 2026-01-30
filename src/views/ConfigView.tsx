@@ -11,9 +11,10 @@ interface ConfigViewProps {
   onUpdateConfig: (newConfig: AppConfig) => void;
   onCardRenames?: (renames: Record<string, string>) => void;
   usedCardNames?: string[];
+  onSyncToCloud?: () => Promise<void>;
 }
 
-export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onUpdateConfig, onCardRenames, usedCardNames = [] }) => {
+export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onUpdateConfig, onCardRenames, usedCardNames = [], onSyncToCloud }) => {
   const [configBuffer, setConfigBuffer] = useState<AppConfig>(initialConfig);
   // Track cards with their original names to handle renames correctly
   const [cardTracker, setCardTracker] = useState<{ originalName: string | null, currentName: string }[]>(
@@ -241,6 +242,51 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onU
             <p className="text-[10px] text-slate-500 italic px-2">
               <i className="fas fa-shield-alt mr-2"></i>
               Tus datos se guardan de forma privada en tu propio Google Drive. Nexus no tiene acceso a otros archivos de tu cuenta.
+            </p>
+          </div>
+        </Card>
+
+        <Card title="Respaldo Cloudflare (Base de Datos)" subtitle="Sincronización manual directa con la base de datos de Nexus.">
+          <div className="space-y-6 mt-4">
+            <div className="p-6 bg-indigo-500/5 rounded-2xl border border-indigo-500/10 flex flex-col sm:flex-row items-center justify-between gap-6">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 flex items-center justify-center text-indigo-500 shadow-lg shadow-indigo-500/10">
+                  <i className="fas fa-database text-xl"></i>
+                </div>
+                <div>
+                  <h4 className="text-white font-bold text-sm">Sincronización Forzada</h4>
+                  <p className="text-xs text-slate-500 mt-0.5">Envía todos tus datos locales a la nube de Cloudflare.</p>
+                </div>
+              </div>
+              <div className="flex gap-3 w-full sm:w-auto">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-500 shadow-lg shadow-indigo-600/20"
+                  onClick={async () => {
+                    if (onSyncToCloud) {
+                      if (confirm("Esto enviará todos tus datos locales a la base de datos remota. ¿Continuar?")) {
+                        setSyncLoading(true);
+                        try {
+                          await onSyncToCloud();
+                          alert("¡Sincronización completada con éxito!");
+                        } catch (e: any) {
+                          alert("Error al sincronizar: " + e.message);
+                        } finally {
+                          setSyncLoading(false);
+                        }
+                      }
+                    }
+                  }}
+                  disabled={syncLoading}
+                >
+                  <i className={`fas ${syncLoading ? 'fa-spinner fa-spin' : 'fa-cloud-upload-alt'} mr-2`}></i> Forzar Sincronización
+                </Button>
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-500 italic px-2">
+              <i className="fas fa-info-circle mr-2"></i>
+              Úsalo si notas que faltan datos en otros dispositivos.
             </p>
           </div>
         </Card>

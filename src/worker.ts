@@ -51,16 +51,30 @@ const authMiddleware = async (c: any, next: any) => {
 
 // Google Auth
 app.post('/api/auth/google', async (c) => {
-    const { credential } = await c.req.json();
-    if (!credential) return c.json({ error: 'Credential required' }, 400);
+    const { credential, accessToken } = await c.req.json();
+    if (!credential && !accessToken) return c.json({ error: 'Credential or Access Token required' }, 400);
 
     try {
-        // Verify with Google REST API (Worker Compatible)
-        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
-        if (!googleRes.ok) {
-            return c.json({ error: 'Invalid Google Token' }, 401);
+        let payload;
+
+        if (credential) {
+            // Verify with Google REST API (Worker Compatible)
+            const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+            if (!googleRes.ok) {
+                return c.json({ error: 'Invalid Google Token' }, 401);
+            }
+            payload = await googleRes.json();
+        } else if (accessToken) {
+            // Verify Access Token via UserInfo
+            const googleRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            });
+            if (!googleRes.ok) {
+                return c.json({ error: 'Invalid Access Token' }, 401);
+            }
+            payload = await googleRes.json();
         }
-        const payload = await googleRes.json();
+
         // @ts-ignore
         const { email, sub, picture } = payload;
 
@@ -252,11 +266,7 @@ app.put('/api/users/profile', authMiddleware, async (c) => {
 
     return c.json({
         success: true,
-        user: {
-            ...updatedUser,
-            // @ts-ignore
-            must_change_password: !!updatedUser.must_change_password
-        }
+        user: updatedUser
     });
 });
 
@@ -280,32 +290,61 @@ app.get('/api/data', authMiddleware, async (c) => {
 
 app.post('/api/entries', authMiddleware, async (c) => {
     const user = c.get('user');
-    const body = await c.req.json();
-    const { id } = body; // Assume full object in body
+    let body;
+    try {
+        body = await c.req.json();
+    } catch (e) {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+    }
 
-    // Simplified upsert logic
-    const exists = await c.env.DB.prepare('SELECT id FROM entries WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+    const { id } = body;
+    console.log(`[POST /entries] Processing entry ${id} for user ${user.id}`);
 
-    if (exists) {
-        await c.env.DB.prepare(`
+    try {
+        // Simplified upsert logic
+        const exists = await c.env.DB.prepare('SELECT id FROM entries WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+
+        // Sanitize inputs (ensure undefined becomes null)
+        const name = body.name || null;
+        const amount = body.amount ?? 0;
+        const category = body.category || null;
+        const tag = body.tag || null;
+        const date = body.date || null;
+        const paymentMethod = body.paymentMethod || null;
+        const status = body.status || null;
+        const month_year = body.month_year || null;
+        const cardName = body.cardName || null;
+        const financingPlan = body.financingPlan || null;
+        const originalAmount = body.originalAmount ?? amount;
+        const currency = body.currency || '$';
+        const exchangeRateEstimated = body.exchangeRateEstimated ?? 1;
+        const exchangeRateActual = body.exchangeRateActual ?? 1;
+        const is_provisional = body.is_provisional ? 1 : 0;
+
+        if (exists) {
+            await c.env.DB.prepare(`
        UPDATE entries 
        SET name=?, amount=?, category=?, tag=?, date=?, paymentMethod=?, status=?, month_year=?, cardName=?, financingPlan=?, originalAmount=?, currency=?, exchangeRateEstimated=?, exchangeRateActual=?, is_provisional=?
        WHERE id=? AND user_id=?
      `).bind(
-            body.name, body.amount, body.category, body.tag, body.date, body.paymentMethod, body.status, body.month_year,
-            body.cardName, body.financingPlan, body.originalAmount, body.currency, body.exchangeRateEstimated, body.exchangeRateActual, body.is_provisional ? 1 : 0,
-            id, user.id
-        ).run();
-    } else {
-        await c.env.DB.prepare(`
+                name, amount, category, tag, date, paymentMethod, status, month_year,
+                cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional,
+                id, user.id
+            ).run();
+        } else {
+            await c.env.DB.prepare(`
        INSERT INTO entries (id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-            id, body.name, body.amount, body.category, body.tag, body.date, body.paymentMethod, body.status, body.month_year,
-            body.cardName, body.financingPlan, user.id, body.originalAmount, body.currency, body.exchangeRateEstimated, body.exchangeRateActual, body.is_provisional ? 1 : 0
-        ).run();
+                id, name, amount, category, tag, date, paymentMethod, status, month_year,
+                cardName, financingPlan, user.id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional
+            ).run();
+        }
+        return c.json({ success: true });
+    } catch (error: any) {
+        console.error('[POST /entries] DB Error:', error);
+        return c.json({ error: 'Database error', details: error.message }, 500);
     }
-    return c.json({ success: true });
 });
 
 app.delete('/api/entries/:id', authMiddleware, async (c) => {
@@ -314,7 +353,6 @@ app.delete('/api/entries/:id', authMiddleware, async (c) => {
     await c.env.DB.prepare('DELETE FROM entries WHERE id = ? AND user_id = ?').bind(id, user.id).run();
     return c.json({ success: true });
 });
-
 
 // Goals
 app.get('/api/goals', authMiddleware, async (c) => {
@@ -325,17 +363,30 @@ app.get('/api/goals', authMiddleware, async (c) => {
 
 app.post('/api/goals', authMiddleware, async (c) => {
     const user = c.get('user');
-    const { id, name, targetAmount, currentAmount, deadline, icon } = await c.req.json();
+    let body;
+    try { body = await c.req.json(); } catch (e) { return c.json({ error: 'Invalid JSON' }, 400); }
 
-    const exists = await c.env.DB.prepare('SELECT id FROM goals WHERE id = ? AND user_id = ?').bind(id, user.id).first();
-    if (exists) {
-        await c.env.DB.prepare('UPDATE goals SET name=?, targetAmount=?, currentAmount=?, deadline=?, icon=? WHERE id=? AND user_id=?')
-            .bind(name, targetAmount, currentAmount, deadline, icon, id, user.id).run();
-    } else {
-        await c.env.DB.prepare('INSERT INTO goals (id, name, targetAmount, currentAmount, deadline, icon, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-            .bind(id, name, targetAmount, currentAmount, deadline, icon, user.id).run();
+    const { id } = body;
+    const name = body.name || 'Meta sin nombre';
+    const targetAmount = body.targetAmount ?? 0;
+    const currentAmount = body.currentAmount ?? 0;
+    const deadline = body.deadline || null;
+    const icon = body.icon || 'star';
+
+    try {
+        const exists = await c.env.DB.prepare('SELECT id FROM goals WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+        if (exists) {
+            await c.env.DB.prepare('UPDATE goals SET name=?, targetAmount=?, currentAmount=?, deadline=?, icon=? WHERE id=? AND user_id=?')
+                .bind(name, targetAmount, currentAmount, deadline, icon, id, user.id).run();
+        } else {
+            await c.env.DB.prepare('INSERT INTO goals (id, name, targetAmount, currentAmount, deadline, icon, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                .bind(id, name, targetAmount, currentAmount, deadline, icon, user.id).run();
+        }
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /goals] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
     }
-    return c.json({ success: true });
 });
 
 app.delete('/api/goals/:id', authMiddleware, async (c) => {
@@ -349,57 +400,298 @@ app.delete('/api/goals/:id', authMiddleware, async (c) => {
 // Config
 app.get('/api/config', authMiddleware, async (c) => {
     const user = c.get('user');
-    // @ts-ignore
-    let config = await c.env.DB.prepare('SELECT * FROM user_configs WHERE user_id = ?').bind(user.id).first();
+    const row = await c.env.DB.prepare('SELECT * FROM user_configs WHERE user_id = ?').bind(user.id).first();
 
-    if (!config) {
-        config = {
-            user_id: user.id,
-            currency: 'ARS',
-            categories: JSON.stringify({
-                ingresos: ['Sueldo', 'Ventas', 'Otros'],
-                gastos: ['Alquiler', 'Comida', 'Servicios', 'Transporte', 'Salud', 'Ocio']
-            }),
-            creditCards: JSON.stringify([])
-        };
+    if (!row) {
+        return c.json(null, 404);
     }
 
-    // Parse JSON fields
-    // @ts-ignore
-    if (typeof config.categories === 'string') {
-        try {
-            // @ts-ignore
-            config.categories = JSON.parse(config.categories);
-        } catch (e) { }
-    }
-    // @ts-ignore
-    if (typeof config.creditCards === 'string') {
-        try {
-            // @ts-ignore
-            config.creditCards = JSON.parse(config.creditCards);
-        } catch (e) { }
-    }
+    const config = {
+        // @ts-ignore
+        currency: row.currency || 'ARS',
+        // @ts-ignore
+        categories: row.categories ? JSON.parse(row.categories) : {},
+        // @ts-ignore
+        creditCards: row.creditCards ? JSON.parse(row.creditCards) : []
+    };
 
     return c.json(config);
 });
 
-app.post('/api/config', authMiddleware, async (c) => {
+app.get('/api/installments', authMiddleware, async (c) => {
     const user = c.get('user');
-    const { currency, categories, creditCards } = await c.req.json();
+    const res = await c.env.DB.prepare('SELECT * FROM installments WHERE user_id = ?').bind(user.id).all();
+    return c.json(res.results);
+});
 
-    const categoriesJson = JSON.stringify(categories);
-    const creditCardsJson = JSON.stringify(creditCards || []);
+app.post('/api/installments', authMiddleware, async (c) => {
+    const user = c.get('user');
+    let body;
+    try { body = await c.req.json(); } catch (e) { return c.json({ error: 'Invalid JSON' }, 400); }
 
-    const exists = await c.env.DB.prepare('SELECT user_id FROM user_configs WHERE user_id = ?').bind(user.id).first();
+    const { id } = body;
+    const name = body.name || 'Compra en cuotas';
+    const totalAmount = body.totalAmount ?? 0;
+    const installments = body.installments ?? 1;
+    const startDate = body.startDate || null;
+    const description = body.description || null;
+    const category = body.category || null;
+    const cardName = body.cardName || null;
 
-    if (exists) {
-        await c.env.DB.prepare('UPDATE user_configs SET currency=?, categories=?, creditCards=? WHERE user_id=?')
-            .bind(currency, categoriesJson, creditCardsJson, user.id).run();
-    } else {
-        await c.env.DB.prepare('INSERT INTO user_configs (user_id, currency, categories, creditCards) VALUES (?, ?, ?, ?)')
-            .bind(user.id, currency, categoriesJson, creditCardsJson).run();
+    try {
+        const exists = await c.env.DB.prepare('SELECT id FROM installments WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+
+        if (exists) {
+            await c.env.DB.prepare('UPDATE installments SET name=?, totalAmount=?, installments=?, startDate=?, description=?, category=?, cardName=? WHERE id=? AND user_id=?')
+                .bind(name, totalAmount, installments, startDate, description, category, cardName, id, user.id).run();
+        } else {
+            await c.env.DB.prepare('INSERT INTO installments (id, name, totalAmount, installments, startDate, description, category, cardName, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                .bind(id, name, totalAmount, installments, startDate, description, category, cardName, user.id).run();
+        }
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /installments] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
     }
+});
+
+app.delete('/api/installments/:id', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    await c.env.DB.prepare('DELETE FROM installments WHERE id = ? AND user_id = ?').bind(id, user.id).run();
     return c.json({ success: true });
 });
 
+app.post('/api/config', authMiddleware, async (c) => {
+    const user = c.get('user');
+    let body;
+    try { body = await c.req.json(); } catch (e) { return c.json({ error: 'Invalid JSON' }, 400); }
+
+    const currency = body.currency || 'ARS';
+    const categories = body.categories || {};
+    const creditCards = body.creditCards || [];
+
+    const categoriesJson = JSON.stringify(categories);
+    const creditCardsJson = JSON.stringify(creditCards);
+
+    try {
+        const exists = await c.env.DB.prepare('SELECT user_id FROM user_configs WHERE user_id = ?').bind(user.id).first();
+
+        if (exists) {
+            await c.env.DB.prepare('UPDATE user_configs SET currency=?, categories=?, creditCards=? WHERE user_id=?')
+                .bind(currency, categoriesJson, creditCardsJson, user.id).run();
+        } else {
+            await c.env.DB.prepare('INSERT INTO user_configs (user_id, currency, categories, creditCards) VALUES (?, ?, ?, ?)')
+                .bind(user.id, currency, categoriesJson, creditCardsJson).run();
+        }
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /config] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// Category Budgets
+app.get('/api/budgets', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const results = await c.env.DB.prepare('SELECT * FROM category_budgets WHERE user_id = ?').bind(user.id).all();
+    return c.json(results.results || []);
+});
+
+app.post('/api/budgets', authMiddleware, async (c) => {
+    const user = c.get('user');
+    let body;
+    try { body = await c.req.json(); } catch (e) { return c.json({ error: 'Invalid JSON' }, 400); }
+
+    const { category, amount } = body;
+    if (!category) return c.json({ error: 'Category required' }, 400);
+
+    try {
+        const exists = await c.env.DB.prepare('SELECT category FROM category_budgets WHERE user_id = ? AND category = ?')
+            .bind(user.id, category).first();
+
+        if (exists) {
+            await c.env.DB.prepare('UPDATE category_budgets SET amount = ? WHERE user_id = ? AND category = ?')
+                .bind(amount || 0, user.id, category).run();
+        } else {
+            await c.env.DB.prepare('INSERT INTO category_budgets (user_id, category, amount) VALUES (?, ?, ?)')
+                .bind(user.id, category, amount || 0).run();
+        }
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /budgets] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+
+
+// --- PARTY (SHARED EXPENSES) ROUTES ---
+
+// 1. Create Party
+app.post('/api/parties', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const { name } = await c.req.json();
+    if (!name) return c.json({ error: 'Name required' }, 400);
+
+    const partyId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    try {
+        // Create Party
+        await c.env.DB.prepare('INSERT INTO parties (id, name, created_by, created_at) VALUES (?, ?, ?, ?)')
+            .bind(partyId, name, user.id, now).run();
+
+        // Add Creator as Member (Accepted)
+        const memberId = crypto.randomUUID();
+        await c.env.DB.prepare('INSERT INTO party_members (id, party_id, user_id, status, invited_email, joined_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(memberId, partyId, user.id, 'accepted', user.username, now).run(); // username used as email fallback if needed
+
+        return c.json({ success: true, partyId });
+    } catch (e: any) {
+        console.error('[POST /parties] Error:', e);
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 2. Invite User
+app.post('/api/parties/invite', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const { partyId, email } = await c.req.json();
+    if (!partyId || !email) return c.json({ error: 'Missing fields' }, 400);
+
+    try {
+        // Check if user exists in DB
+        const invitedUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+
+        const now = new Date().toISOString();
+        const memberId = crypto.randomUUID();
+        let targetUserId = invitedUser ? invitedUser.id : null;
+        // If user doesn't exist yet, we still store the invite with NULL user_id but VALID invited_email.
+        // When they register/login later, we can link it (advanced) or just show it if they exist now.
+        // For this version: We assume they MUST exist or we store just email and check on login?
+        // Let's store targetUserId if found, otherwise just email. Logic on 'get invitations' will match by email too.
+
+        await c.env.DB.prepare('INSERT INTO party_members (id, party_id, user_id, status, invited_email, joined_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(memberId, partyId, targetUserId, 'pending', email.toLowerCase(), now).run();
+
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /parties/invite] Error:', e);
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 3. Get Pending Invitations
+app.get('/api/invitations', authMiddleware, async (c) => {
+    const user = c.get('user');
+    try {
+        // Find invites where user_id matches OR invited_email matches user's email
+        // We need user's email. It should be in the JWT payload or we fetch it.
+        // In our authMiddleware we set 'user' from JWT. Let's assume it has email or we fetch.
+        // JWT has: id, username, role.
+
+        // Fetch full user to get email
+        const fullUser = await c.env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(user.id).first();
+        // @ts-ignore
+        const email = fullUser?.email;
+
+        let query = 'SELECT pm.id, p.name as partyName, pm.invited_email FROM party_members pm JOIN parties p ON pm.party_id = p.id WHERE pm.status = ? AND (pm.user_id = ?';
+        const params = ['pending', user.id];
+
+        if (email) {
+            query += ' OR pm.invited_email = ?';
+            params.push(email);
+        }
+        query += ')';
+
+        const invites = await c.env.DB.prepare(query).bind(...params).all();
+        return c.json(invites.results);
+    } catch (e: any) {
+        console.error('[GET /invitations] Error:', e);
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 4. Respond to Invitation
+app.post('/api/invitations/:id/respond', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const inviteId = c.req.param('id');
+    const { accept } = await c.req.json(); // true or false
+
+    const status = accept ? 'accepted' : 'rejected';
+
+    try {
+        // Link user_id if it was null (email invite)
+        await c.env.DB.prepare('UPDATE party_members SET status = ?, user_id = ? WHERE id = ?')
+            .bind(status, user.id, inviteId).run();
+
+        return c.json({ success: true });
+    } catch (e: any) {
+        console.error('[POST /invitations/respond] Error:', e);
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 5. Get My Parties
+app.get('/api/parties', authMiddleware, async (c) => {
+    const user = c.get('user');
+    try {
+        const parties = await c.env.DB.prepare(`
+            SELECT p.* FROM parties p
+            JOIN party_members pm ON p.id = pm.party_id
+            WHERE pm.user_id = ? AND pm.status = 'accepted'
+        `).bind(user.id).all();
+        return c.json(parties.results);
+    } catch (e: any) {
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 6. Get Party Details (members + expenses)
+app.get('/api/parties/:id', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const partyId = c.req.param('id');
+
+    try {
+        // Verify membership
+        const membership = await c.env.DB.prepare('SELECT status FROM party_members WHERE party_id = ? AND user_id = ? AND status = ?')
+            .bind(partyId, user.id, 'accepted').first();
+
+        if (!membership) return c.json({ error: 'Not a member' }, 403);
+
+        const expenses = await c.env.DB.prepare('SELECT * FROM party_expenses WHERE party_id = ? ORDER BY date DESC').bind(partyId).all();
+        const members = await c.env.DB.prepare(`
+            SELECT u.id, u.username, u.email, u.firstName, u.lastName, u.avatar 
+            FROM party_members pm 
+            LEFT JOIN users u ON pm.user_id = u.id 
+            WHERE pm.party_id = ? AND pm.status = 'accepted'
+        `).bind(partyId).all();
+
+        return c.json({ expenses: expenses.results, members: members.results });
+    } catch (e: any) {
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
+// 7. Add Expense
+app.post('/api/parties/:id/expenses', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const partyId = c.req.param('id');
+    const { description, amount, date, participants, category } = await c.req.json(); // participants = [user_id_1, user_id_2]
+
+    const expenseId = crypto.randomUUID();
+    const participantsJson = JSON.stringify(participants || []);
+
+    try {
+        await c.env.DB.prepare('INSERT INTO party_expenses (id, party_id, payer_id, amount, description, date, participants, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(expenseId, partyId, user.id, amount, description, date, participantsJson, category).run();
+
+        return c.json({ success: true, expenseId });
+    } catch (e: any) {
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
 export default app;
+

@@ -148,26 +148,42 @@ app.get('/api/has-users', async (req, res) => {
 });
 
 // Google Login
+// Google Login
 app.post('/api/auth/google', async (req, res) => {
-  const { credential } = req.body;
+  const { credential, accessToken } = req.body;
 
-  if (!credential) {
-    return res.status(400).json({ error: 'Credential required' });
+  if (!credential && !accessToken) {
+    return res.status(400).json({ error: 'Credential or Access Token required' });
   }
 
   try {
-    // Verify token
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
+    let email, name, sub, picture;
 
-    if (!payload) {
-      return res.status(400).json({ error: 'Invalid token' });
+    if (credential) {
+      // Verify ID Token (Standard <GoogleLogin> component)
+      const ticket = await client.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+      const payload = ticket.getPayload();
+      if (!payload) return res.status(400).json({ error: 'Invalid token' });
+
+      email = payload.email;
+      sub = payload.sub; // unique google id
+      picture = payload.picture;
+    } else if (accessToken) {
+      // Verify Access Token (Custom useGoogleLogin hook)
+      const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+
+      if (!userInfoResponse.ok) throw new Error('Failed to fetch user info');
+
+      const userInfo = await userInfoResponse.json();
+      email = userInfo.email;
+      sub = userInfo.sub;
+      picture = userInfo.picture;
     }
-
-    const { email, name, sub, picture } = payload; // sub is the unique google id
 
     // Check if user exists by google_id OR email
     let user = await get('SELECT * FROM users WHERE google_id = ? OR email = ?', [sub, email]);
@@ -183,8 +199,6 @@ app.post('/api/auth/google', async (req, res) => {
       }
 
       const id = uuidv4();
-      // Password null or empty string for google users (since we use bcrypt compare, empty string won't match any hash easily, but better to handle it)
-      // Here we insert empty string or random hash to prevent manual login with empty password
       const dummyPassword = await bcrypt.hash(uuidv4(), 10);
 
       await run('INSERT INTO users (id, username, password, email, google_id, role, avatar, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
@@ -399,28 +413,42 @@ app.get('/api/data', authenticateToken, async (req, res) => {
 
 // POST /api/entries
 app.post('/api/entries', authenticateToken, async (req, res) => {
-  const { id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual } = req.body;
+  let body = req.body;
   const userId = req.user.id;
-
-  if (!id || !name || !amount || !category || !date) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
+  const { id } = body;
 
   try {
+    // Sanitize inputs (ensure undefined becomes null)
+    const name = body.name || null;
+    const amount = body.amount ?? 0;
+    const category = body.category || null;
+    const tag = body.tag || null;
+    const date = body.date || null;
+    const paymentMethod = body.paymentMethod || null;
+    const status = body.status || null;
+    const month_year = body.month_year || null;
+    const cardName = body.cardName || null;
+    const financingPlan = body.financingPlan || null;
+    const originalAmount = body.originalAmount ?? amount;
+    const currency = body.currency || 'ARS'; // Local server default
+    const exchangeRateEstimated = body.exchangeRateEstimated ?? 1;
+    const exchangeRateActual = body.exchangeRateActual ?? 1;
+    const is_provisional = body.is_provisional ? 1 : 0;
+
     // Check if entry exists and belongs to user
     const exists = await get('SELECT id FROM entries WHERE id = ? AND user_id = ?', [id, userId]);
 
     if (exists) {
       await run(`
         UPDATE entries 
-        SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, exchangeRateActual = ?
+        SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, exchangeRateActual = ?, is_provisional = ?
         WHERE id = ? AND user_id = ?
-      `, [name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, id, userId]);
+      `, [name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional, id, userId]);
     } else {
       await run(`
-        INSERT INTO entries (id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, userId, originalAmount, currency, exchangeRateEstimated, exchangeRateActual]);
+        INSERT INTO entries (id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, userId, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional]);
     }
     res.json({ success: true });
   } catch (error) {
@@ -783,6 +811,154 @@ app.post('/api/parse-document', authenticateToken, upload.single('file'), async 
   } catch (error) {
     console.error('Gemini Error:', error);
     res.status(500).json({ error: 'Error processing document with AI' });
+  }
+});
+
+// --- PARTY SYSTEM (Shared Expenses) ---
+
+// 1. Create Party
+app.post('/api/parties', authenticateToken, async (req, res) => {
+  const { name } = req.body;
+  const userId = req.user.id;
+  const username = req.user.username;
+
+  if (!name) return res.status(400).json({ error: 'Name required' });
+
+  const partyId = uuidv4();
+  const now = new Date().toISOString();
+
+  try {
+    await run('INSERT INTO parties (id, name, created_by, created_at) VALUES (?, ?, ?, ?)', [partyId, name, userId, now]);
+
+    // Add Creator as Member
+    const memberId = uuidv4();
+    await run('INSERT INTO party_members (id, party_id, user_id, status, invited_email, joined_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [memberId, partyId, userId, 'accepted', username, now]);
+
+    res.json({ success: true, partyId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 2. Invite User
+app.post('/api/parties/invite', authenticateToken, async (req, res) => {
+  const { partyId, email } = req.body;
+  if (!partyId || !email) return res.status(400).json({ error: 'Missing fields' });
+
+  try {
+    const invitedUser = await get('SELECT id FROM users WHERE email = ?', [email]);
+    const now = new Date().toISOString();
+    const memberId = uuidv4();
+    const targetUserId = invitedUser ? invitedUser.id : null;
+
+    await run('INSERT INTO party_members (id, party_id, user_id, status, invited_email, joined_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [memberId, partyId, targetUserId, 'pending', email.toLowerCase(), now]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 3. Get Pending Invitations
+app.get('/api/invitations', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const fullUser = await get('SELECT email FROM users WHERE id = ?', [userId]);
+    const email = fullUser?.email;
+
+    let queryStr = 'SELECT pm.id, p.name as partyName, pm.invited_email FROM party_members pm JOIN parties p ON pm.party_id = p.id WHERE pm.status = ? AND (pm.user_id = ?';
+    const params = ['pending', userId];
+
+    if (email) {
+      queryStr += ' OR pm.invited_email = ?';
+      params.push(email);
+    }
+    queryStr += ')';
+
+    const invites = await query(queryStr, params);
+    res.json(invites);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 4. Respond to Invitation
+app.post('/api/invitations/:id/respond', authenticateToken, async (req, res) => {
+  const inviteId = req.params.id;
+  const userId = req.user.id;
+  const { accept } = req.body;
+  const status = accept ? 'accepted' : 'rejected';
+
+  try {
+    await run('UPDATE party_members SET status = ?, user_id = ? WHERE id = ?', [status, userId, inviteId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 5. Get My Parties
+app.get('/api/parties', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const parties = await query(`
+      SELECT p.* FROM parties p
+      JOIN party_members pm ON p.id = pm.party_id
+      WHERE pm.user_id = ? AND pm.status = 'accepted'
+    `, [userId]);
+    res.json(parties);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 6. Get Party Details
+app.get('/api/parties/:id', authenticateToken, async (req, res) => {
+  const partyId = req.params.id;
+  const userId = req.user.id;
+
+  try {
+    const membership = await get('SELECT status FROM party_members WHERE party_id = ? AND user_id = ? AND status = ?', [partyId, userId, 'accepted']);
+    if (!membership) return res.status(403).json({ error: 'Not a member' });
+
+    const expenses = await query('SELECT * FROM party_expenses WHERE party_id = ? ORDER BY date DESC', [partyId]);
+    const members = await query(`
+      SELECT u.id, u.username, u.email, u.firstName, u.lastName, u.avatar 
+      FROM party_members pm 
+      LEFT JOIN users u ON pm.user_id = u.id 
+      WHERE pm.party_id = ? AND pm.status = 'accepted'
+    `, [partyId]);
+
+    res.json({ expenses, members });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 7. Add Expense
+app.post('/api/parties/:id/expenses', authenticateToken, async (req, res) => {
+  const partyId = req.params.id;
+  const userId = req.user.id;
+  const { description, amount, date, participants, category } = req.body;
+
+  const expenseId = uuidv4();
+  const participantsJson = JSON.stringify(participants || []);
+
+  try {
+    await run('INSERT INTO party_expenses (id, party_id, payer_id, amount, description, date, participants, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [expenseId, partyId, userId, amount, description, date, participantsJson, category]);
+    res.json({ success: true, expenseId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
   }
 });
 

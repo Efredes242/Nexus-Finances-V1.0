@@ -271,7 +271,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                             const parts = e.date.split('T')[0].split('-');
                                             return `${parts[2]}/${parts[1]}/${parts[0]}`;
                                           })()}</span>
-                                          {e.is_provisional && (
+                                          {!!e.is_provisional && (
                                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-500 border border-amber-500/30 ml-2 animate-pulse">
                                               <i className="fas fa-fw fa-clock text-[9px]"></i>
                                               <span className="text-[9px] font-black uppercase tracking-wider">Proyectado</span>
@@ -352,7 +352,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                     <td className="px-4 py-3 lg:px-8 lg:py-4 text-center">
                                       {!e.installmentRef && !e.id.startsWith('card-agg-') && (
                                         <div className="flex justify-center gap-2 opacity-0 group-hover/row:opacity-100 transition-opacity transform translate-x-2 group-hover/row:translate-x-0 duration-300">
-                                          {e.is_provisional && (
+                                          {!!e.is_provisional && (
                                             <button onClick={(ev) => { ev.stopPropagation(); onConfirmEntry(e); }} className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white transition-all shadow-lg hover:shadow-emerald-500/30 flex items-center justify-center" title="Confirmar movimiento">
                                               <i className="fas fa-check text-xs"></i>
                                             </button>

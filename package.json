@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
     "electron:build": "vite build && electron-builder",
+    "db:sync": "node scripts/sync-db.cjs",
     "electron:pack": "vite build && electron-packager . \"Nexus Finances\" --platform=win32 --arch=x64 --icon=build/icon.ico --out=dist-stage-v2 --overwrite --ignore=\"^/(src|public|dist-.*|scripts|build|server/finanzas\\.db|Nexus-app|nexus-pagina.*|Nexus.*DEMO|BACKUPS-FUNCIONALES|Instaladores)\" && node scripts/cleanup-build.cjs",
     "build:installer": "node scripts/build-manual-installer.cjs"
   },

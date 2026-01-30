@@ -208,6 +208,41 @@ db.serialize(() => {
       FOREIGN KEY(user_id) REFERENCES users(id)
     )
   `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS parties (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS party_members (
+      id TEXT PRIMARY KEY,
+      party_id TEXT NOT NULL,
+      user_id TEXT,
+      status TEXT NOT NULL,
+      invited_email TEXT,
+      joined_at TEXT NOT NULL,
+      FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS party_expenses (
+      id TEXT PRIMARY KEY,
+      party_id TEXT NOT NULL,
+      payer_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      description TEXT NOT NULL,
+      date TEXT NOT NULL,
+      category TEXT,
+      participants TEXT,
+      FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
+    )
+  `);
 });
 
 export default db;

@@ -7,8 +7,8 @@ interface SidebarProps {
   setSidebarOpen: (open: boolean) => void;
   desktopSidebarOpen: boolean;
   setDesktopSidebarOpen: (open: boolean) => void;
-  activeTab: 'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual';
-  setActiveTab: (tab: 'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual') => void;
+  activeTab: 'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual' | 'party';
+  setActiveTab: (tab: 'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual' | 'party') => void;
   user: any;
   netFlow: number;
   projectedNetFlow: number;
@@ -84,6 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <nav className="space-y-3 flex-1 overflow-y-hidden hover:overflow-y-auto custom-scrollbar px-3">
         {[
           { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
+          { id: 'party', icon: 'fa-users', label: 'Gastos en Grupo' },
           { id: 'presupuesto', icon: 'fa-receipt', label: 'Movimientos' },
           { id: 'tarjetas', icon: 'fa-credit-card', label: 'Cuotas / Tarjetas' },
           { id: 'metas', icon: 'fa-bullseye', label: 'Metas' },

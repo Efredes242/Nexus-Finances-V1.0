@@ -84,11 +84,12 @@ export const api = {
     return handleResponse(res);
   },
 
-  async googleLogin(credential) {
+  async googleLogin(data: string | { credential?: string; accessToken?: string }) {
+    const body = typeof data === 'string' ? { credential: data } : data;
     const res = await fetch(`${API_URL}/auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credential })
+      body: JSON.stringify(body)
     });
 
     if (res.status === 401) {
@@ -258,5 +259,91 @@ export const api = {
       body: JSON.stringify({ accessToken })
     });
     return handleResponse(res);
+  },
+
+  // --- PARTY SYSTEM ---
+  async createParty(name: string) {
+    const res = await fetch(`${API_URL}/parties`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ name })
+    });
+    return handleResponse(res);
+  },
+
+  async inviteToParty(partyId: string, email: string) {
+    const res = await fetch(`${API_URL}/parties/invite`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ partyId, email })
+    });
+    return handleResponse(res);
+  },
+
+  async getInvitations() {
+    const res = await fetch(`${API_URL}/invitations`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async respondToInvitation(inviteId: string, accept: boolean) {
+    const res = await fetch(`${API_URL}/invitations/${inviteId}/respond`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ accept })
+    });
+    return handleResponse(res);
+  },
+
+  async getParties() {
+    const res = await fetch(`${API_URL}/parties`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async getPartyDetails(partyId: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async addPartyExpense(partyId: string, data: any) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/expenses`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
+  async syncAllDataToCloud(data: { budgets: Record<string, any>, goals: any[], installments: any[], config: any }) {
+    // 1. Sync Entries (iterate all months)
+    for (const monthKey in data.budgets) {
+      const monthData = data.budgets[monthKey];
+      for (const entry of monthData.entries) {
+        await this.saveEntry(entry);
+      }
+    }
+
+    // 2. Sync Goals
+    for (const goal of data.goals) {
+      await this.saveGoal(goal);
+    }
+
+    // 3. Sync Installments
+    for (const inst of data.installments) {
+      await this.saveInstallment(inst);
+    }
+
+    // 4. Sync Config
+    await this.saveConfig(data.config);
+
+    return true;
   }
 };

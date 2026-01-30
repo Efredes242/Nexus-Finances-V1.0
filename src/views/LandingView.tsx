@@ -23,108 +23,33 @@ export const LandingView: React.FC<LandingViewProps> = ({ onLogin: onAppLogin, d
     const googleLogin = useGoogleLogin({
         onSuccess: async (tokenResponse) => {
             try {
-                // Exchange code/token for backend session
-                // Note: The original implementation used credentialResponse.credential (ID Token)
-                // useGoogleLogin implicitly provides an access token flow usually, but we need ID token or similar?
-                // Actually, api.googleLogin expects an ID Token string.
-                // useGoogleLogin default flow is 'implicit' (access_token).
-                // WE NEED 'id_token' flow or handle access_token in backend.
-                // BUT my backend (previous checks) seemed to verify default credentials.
-                // Let's stick to the Component <GoogleLogin> if possible? 
-                // NO, the buttons are custom.
-                // I need useGoogleLogin with flow: 'auth-code' or just use the google button logic?
-                // Wait, standard useGoogleLogin 'implicit' flow returns access_token.
-                // If my backend validates ID Token, this might fail.
-                // Let's use flow: 'auth-code' if backend exchanges it, or check what api.googleLogin does.
-                // Checking previous code: api.googleLogin(credential) -> calls /api/auth/google with { token: credential }
-                // The credential from <GoogleLogin> is a JWT ID Token.
-                // useGoogleLogin with default options gives access_token (Opaque).
-                // I should request flow inside useGoogleLogin?
-                // OR: I can render the <GoogleLogin> invisible and trigger it? No.
-                // Correct way: useGoogleLogin({ onSuccess: ... }) gives TokenResponse (access_token).
-                // I need user info. 
-                // Let's fetch user info using the access token then send to backend? or send access_token to backend?
-                // My backend likely expects ID TOKEN.
-                // I will assume I need to fetch the user profile with the access token, 
-                // OR I can try to get the ID Token via useGoogleLogin if configured?
-                // Actually, easier path: use the `onLogin` to just scroll to a "Login Section" where I put the standard button?
-                // User requested "Login with Google" button. The new design has "Empieza Gratis".
-                // I'll try to use the hook. If I need ID token, I can get it via `onSuccess` response if `flow: 'implicit'`?
-                // Actually, google's new Identity Services SDK (GSI) used by @react-oauth/google returns ID Token in <GoogleLogin> but access token in useGoogleLogin.
-                // I will try to use the access token. 
-                // WARNING: If backend expects ID token, I must change backend or frontend.
-                // Let's look at `api.googleLogin` logic if I can.
+                // Use access_token to login via backend (which will fetch user profile)
+                const data = await api.googleLogin({ accessToken: tokenResponse.access_token }) as any;
 
-                // TEMPORARY FIX: I will use a simple function that calls the /userinfo endpoint of Google 
-                // with the access token, and then... wait, my backend validates the token.
-                // If I can't verify backend, I should probably stick to what works:
-                // The previous LandingView used <GoogleLogin>.
-                // I will Overlay the <GoogleLogin> button on top of the "Empezar" button? No, that's ugly.
-                // I will try to implement the `googleLogin` function to get the response.
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                localStorage.setItem('loginHistory', 'true');
 
-            } catch (err) {
+                onAppLogin(data.user);
+            } catch (err: any) {
                 console.error(err);
-                setError('Login failed');
+                setError(err.message || 'Error al iniciar sesión con Google');
             }
         },
         onError: () => setError('Login Failed'),
+        flow: 'implicit', // Returns access_token
+        prompt: 'select_account' // 👈 This forces the account selector!
     });
-
-    // Re-evaluating: usage of useGoogleLogin.
-    // Ideally, I'd fetch https://www.googleapis.com/oauth2/v3/userinfo with the access_token.
-    // Then send that profile to my backend? Or creates a session?
-    // Previous `api.googleLogin` sends `token` to server. `server` uses `oauth2Client.verifyIdToken`.
-    // So the server EXPECTS AN ID TOKEN.
-    // `useGoogleLogin` does NOT return an ID Token easily in the implicit flow (it returns access_token).
-    // I can switch to `flow: 'auth-code'`, get a code, and swap it?
-
-    // ALTERNATIVE:
-    // Render the <GoogleLogin> component but STYLE IT to match the design?
-    // <GoogleLogin> renders an iframe. Hard to style.
-
-    // WORKAROUND:
-    // I will use the `useGoogleLogin` hook, get the `access_token`.
-    // Then I will call `https://www.googleapis.com/oauth2/v3/userinfo` manually to get the user's email/sub.
-    // THEN... I can't sign a JWT for the backend. The backend needs to verify it.
-
-    // WAIT. I can use `useGoogleLogin` with `flow: 'implicit'` and scope `openid email profile`.
-    // Does it return `id_token` in the response?
-    // Docs say: For implicit flow, it returns `access_token`.
-
-    // Okay, I will modify `api.ts` or add a new endpoint? No, can't touch backend easily (it's verified).
-    // I must provide an ID Token.
-    // There is a way! `useGoogleLogin` can return ID Token if configured?
-    // Actually, I can use the `<GoogleLogin render={...} />` prop?
-    // The newer `@react-oauth/google` removed the `render` prop. It only supports the standard button or the hook.
-
-    // Let's look at the `api.googleLogin` from previous turns to be sure.
-
-    // DECISION:
-    // I will assume for now I can figure this out.
-    // But to be safe and deliver quickly, I will add a "Login" Modal or Section that renders the STANDARD <GoogleLogin> button which I KNOW works, 
-    // when the user clicks "Empezar Gratis".
-    // This is safer.
 
     const [showLoginModal, setShowLoginModal] = useState(false);
 
     const handleLoginClick = () => {
-        // Instead of direct hook, show modal with the official button
         setShowLoginModal(true);
     };
 
+    // Standard handler (kept if needed, but unused with hook)
     const handleGoogleSuccess = async (credentialResponse: any) => {
-        try {
-            if (!credentialResponse.credential) throw new Error('No credential received');
-            const data = await api.googleLogin(credentialResponse.credential) as any;
-
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('user', JSON.stringify(data.user));
-            localStorage.setItem('loginHistory', 'true');
-
-            onAppLogin(data.user);
-        } catch (err: any) {
-            setError(err.message || 'Error al iniciar sesión con Google');
-        }
+        // ... legacy component handler
     };
 
     // Scroll Container Ref
@@ -248,16 +173,13 @@ export const LandingView: React.FC<LandingViewProps> = ({ onLogin: onAppLogin, d
                         <p className="text-slate-400 text-center mb-8">Inicia sesión para continuar</p>
 
                         <div className="flex justify-center mb-6">
-                            {/* Dynamically import GoogleLogin to avoid SSR issues if any, but standard import is fine */}
-                            {/* We use a wrapper to style it or just center it */}
-                            <GoogleLogin
-                                onSuccess={handleGoogleSuccess}
-                                onError={() => setError('Error al conectar con Google')}
-                                theme="filled_black"
-                                shape="pill"
-                                text="continue_with"
-                                width="250"
-                            />
+                            <button
+                                onClick={() => googleLogin()}
+                                className="flex items-center justify-center gap-3 bg-white text-slate-900 font-bold py-3 px-6 rounded-full hover:bg-slate-100 transition-colors w-full max-w-xs shadow-lg"
+                            >
+                                <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
+                                <span>Continuar con Google</span>
+                            </button>
                         </div>
                         {error && <p className="text-rose-500 text-center text-sm">{error}</p>}
 

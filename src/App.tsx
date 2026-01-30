@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { PartyView } from './views/PartyView';
+import { InvitationModal } from './components/InvitationModal';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   AreaChart, Area, CartesianGrid, PieChart, Pie, Sector, Legend,
@@ -97,7 +99,7 @@ const App: React.FC = () => {
   });
 
   // --- ESTADOS DE UI ---
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual' | 'party'>(() => {
     const saved = localStorage.getItem('finanzas_pro_ui_state');
     if (saved) {
       try {
@@ -466,53 +468,60 @@ const App: React.FC = () => {
   }, [state.budgets, state.currentMonth, currentTotals]);
 
   // --- HANDLERS ---
-  const saveEntry = (entry: BudgetEntry) => {
-    // Calcular actualizaciones de metas antes de actualizar el estado
-    const oldEntry = state.budgets[state.currentMonth]?.entries.find(e => e.id === entry.id);
-    const goalsToUpdate = new Map<string, SavingsGoal>();
+  const saveEntry = async (entry: BudgetEntry) => {
+    try {
+      await api.saveEntry(entry);
 
-    const getGoal = (id: string) => {
-      if (goalsToUpdate.has(id)) return goalsToUpdate.get(id)!;
-      const g = state.goals.find(g => g.id === id);
-      return g ? { ...g } : null;
-    };
+      // Calcular actualizaciones de metas antes de actualizar el estado
+      const oldEntry = state.budgets[state.currentMonth]?.entries.find(e => e.id === entry.id);
+      const goalsToUpdate = new Map<string, SavingsGoal>();
 
-    // Revertir impacto de la entrada anterior
-    if (oldEntry && oldEntry.goalId) {
-      const g = getGoal(oldEntry.goalId);
-      if (g) {
-        g.currentAmount = Math.max(0, g.currentAmount - oldEntry.amount);
-        goalsToUpdate.set(g.id, g);
-      }
-    }
-
-    // Aplicar impacto de la nueva entrada
-    if (entry.goalId) {
-      const g = getGoal(entry.goalId);
-      if (g) {
-        g.currentAmount += entry.amount;
-        goalsToUpdate.set(g.id, g);
-      }
-    }
-
-    setState(prev => {
-      const monthData = prev.budgets[prev.currentMonth] || { month: prev.currentMonth, entries: [] };
-      const exists = monthData.entries.find(e => e.id === entry.id);
-      const newEntries = exists
-        ? monthData.entries.map(e => e.id === entry.id ? entry : e)
-        : [...monthData.entries, entry];
-
-      const newGoals = prev.goals.map(g => goalsToUpdate.has(g.id) ? goalsToUpdate.get(g.id)! : g);
-
-      return {
-        ...prev,
-        budgets: { ...prev.budgets, [prev.currentMonth]: { ...monthData, entries: newEntries } },
-        goals: newGoals
+      const getGoal = (id: string) => {
+        if (goalsToUpdate.has(id)) return goalsToUpdate.get(id)!;
+        const g = state.goals.find(g => g.id === id);
+        return g ? { ...g } : null;
       };
-    });
-    setEditingEntry(null);
-    api.saveEntry(entry);
-    goalsToUpdate.forEach(g => api.saveGoal(g));
+
+      // Revertir impacto de la entrada anterior
+      if (oldEntry && oldEntry.goalId) {
+        const g = getGoal(oldEntry.goalId);
+        if (g) {
+          g.currentAmount = Math.max(0, g.currentAmount - oldEntry.amount);
+          goalsToUpdate.set(g.id, g);
+        }
+      }
+
+      // Aplicar impacto de la nueva entrada
+      if (entry.goalId) {
+        const g = getGoal(entry.goalId);
+        if (g) {
+          g.currentAmount += entry.amount;
+          goalsToUpdate.set(g.id, g);
+        }
+      }
+
+      setState(prev => {
+        const monthData = prev.budgets[prev.currentMonth] || { month: prev.currentMonth, entries: [] };
+        const exists = monthData.entries.find(e => e.id === entry.id);
+        const newEntries = exists
+          ? monthData.entries.map(e => e.id === entry.id ? entry : e)
+          : [...monthData.entries, entry];
+
+        const newGoals = prev.goals.map(g => goalsToUpdate.has(g.id) ? goalsToUpdate.get(g.id)! : g);
+
+        return {
+          ...prev,
+          budgets: { ...prev.budgets, [prev.currentMonth]: { ...monthData, entries: newEntries } },
+          goals: newGoals
+        };
+      });
+      setEditingEntry(null);
+      goalsToUpdate.forEach(g => api.saveGoal(g));
+
+    } catch (e: any) {
+      console.error("Failed to save entry:", e);
+      alert("Error al guardar el movimiento: " + (e.message || "Error desconocido"));
+    }
   };
 
   const deleteEntry = (id: string) => {
@@ -975,6 +984,11 @@ const App: React.FC = () => {
         />
       )}
 
+      {/* TAB: GASTOS EN GRUPO */}
+      {activeTab === 'party' && (
+        <PartyView user={user} />
+      )}
+
       {/* TAB: PRESUPUESTO / MOVIMIENTOS */}
       {activeTab === 'presupuesto' && (
         <PresupuestoView
@@ -1042,6 +1056,14 @@ const App: React.FC = () => {
           onUpdateConfig={(newConfig) => setState(prev => ({ ...prev, config: newConfig }))}
           onCardRenames={handleCardRenames}
           usedCardNames={usedCardNames}
+          onSyncToCloud={async () => {
+            await api.syncAllDataToCloud({
+              budgets: state.budgets,
+              goals: state.goals,
+              installments: state.installmentPurchases,
+              config: state.config
+            });
+          }}
         />
       )}
 
