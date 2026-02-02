@@ -241,7 +241,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
     };
 
     const handleDeleteParty = async () => {
-        if (!selectedParty || !confirm("Â¿Eliminar este grupo y todos sus gastos? Esta acciÃ³n no se puede deshacer.")) return;
+        if (!selectedParty || !confirm("¿Eliminar este grupo y todos sus gastos? Esta acción no se puede deshacer.")) return;
         try {
             await api.deleteParty(selectedParty.id);
             setSelectedParty(null);
@@ -252,7 +252,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
     };
 
     const handleLeaveParty = async () => {
-        if (!selectedParty || !user || !confirm("Â¿Seguro que quieres salir del grupo?")) return;
+        if (!selectedParty || !user || !confirm("¿Seguro que quieres salir del grupo?")) return;
 
         // Find my membership record
         // The 'members' array has objects where 'id' is the user_id (for registered users)
@@ -504,7 +504,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                                         </div>
                                         <div className="text-right shrink-0">
                                             <div className={`font-bold ${m.balance >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                                {m.balance >= 0 ? 'Te debe (Total)' : 'Debes (Total)'}<br />
+                                                {m.balance >= 0 ? 'Le debes' : 'Te debe'}<br />
                                                 ${Math.abs(m.balance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                                             </div>
                                             {m.monthlyInstallment !== 0 && (

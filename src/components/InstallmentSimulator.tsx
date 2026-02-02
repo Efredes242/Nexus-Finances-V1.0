@@ -206,8 +206,8 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
     }, [items, currentUser.id, currentMonth]);
 
     const getMemberName = (id: string) => {
-        const m = members.find(m => m.id === id);
-        return m ? (m.nickname || m.username || m.firstName || m.email) : 'Desconocido';
+        const m = members.find(m => m.id === id || m.memberId === id);
+        return m ? (m.nickname || m.username || m.firstName || m.email) : 'Usuario (Eliminado)';
     };
 
     const totalItemsAmount = items.reduce((sum, item) => sum + item.totalAmount, 0);
