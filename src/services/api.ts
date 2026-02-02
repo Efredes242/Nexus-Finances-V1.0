@@ -45,6 +45,7 @@ const handleResponse = async (response: Response) => {
   return response.json();
 };
 
+console.log('API Service Loaded - Version Installments Fixed');
 export const api = {
   // Update User Profile
   async updateProfile(data: { firstName: string; lastName: string; birthDate: string }) {
@@ -243,6 +244,13 @@ export const api = {
     return handleResponse(res);
   },
 
+  async getConfig() {
+    const headers = getHeaders();
+    const res = await fetch(`${API_URL}/config`, { headers });
+    if (res.status === 404) return null;
+    return handleResponse(res);
+  },
+
   async driveUpload(accessToken: string) {
     const res = await fetch(`${API_URL}/sync/drive/upload`, {
       method: 'POST',
@@ -262,13 +270,49 @@ export const api = {
   },
 
   // --- PARTY SYSTEM ---
-  async createParty(name: string) {
+  async createParty(name: string, description?: string) {
+    const token = localStorage.getItem('token');
     const res = await fetch(`${API_URL}/parties`, {
       method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ name })
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description })
     });
-    return handleResponse(res);
+    if (!res.ok) throw new Error('Failed');
+    return res.json();
+  },
+
+  async updateParty(id: string, data: { name: string, description?: string }) {
+    const token = localStorage.getItem('token');
+    const res = await fetch(`${API_URL}/parties/${id}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('Failed');
+    return res.json();
+  },
+
+  async deleteParty(id: string) {
+    const token = localStorage.getItem('token');
+    const res = await fetch(`${API_URL}/parties/${id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error('Failed');
+    return res.json();
+  },
+
+  async deletePartyExpense(partyId: string, expenseId: string) {
+    const token = localStorage.getItem('token');
+    const res = await fetch(`${API_URL}/parties/${partyId}/expenses/${expenseId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown Error' }));
+      throw new Error(err.error || 'Failed to delete');
+    }
+    return res.json();
   },
 
   async inviteToParty(partyId: string, email: string) {
@@ -276,6 +320,32 @@ export const api = {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify({ partyId, email })
+    });
+    return handleResponse(res);
+  },
+
+  async addGuestMember(partyId: string, name: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/guests`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ name })
+    });
+    if (!res.ok) throw new Error('Failed to add guest');
+    return res.json();
+  },
+
+  async cancelInvitation(memberId: string) {
+    const res = await fetch(`${API_URL}/parties/members/${memberId}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async getDebugUsers() {
+    const res = await fetch(`${API_URL}/debug/users`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
     });
     return handleResponse(res);
   },
@@ -305,6 +375,14 @@ export const api = {
     return handleResponse(res);
   },
 
+  async removeMember(memberId: string) {
+    const res = await fetch(`${API_URL}/parties/members/${memberId}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
   async getPartyDetails(partyId: string) {
     const res = await fetch(`${API_URL}/parties/${partyId}`, {
       method: 'GET',
@@ -318,6 +396,32 @@ export const api = {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
+  async updatePartyExpense(partyId: string, expenseId: string, data: any) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/expenses/${expenseId}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
+  async getNicknames(partyId: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/nicknames`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async setNickname(partyId: string, memberId: string, nickname: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/nicknames/${memberId}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify({ nickname })
     });
     return handleResponse(res);
   },
@@ -345,5 +449,31 @@ export const api = {
     await this.saveConfig(data.config);
 
     return true;
-  }
+  },
+
+  // Installment Plans
+  async getInstallmentPlans(partyId: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/installments`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async createInstallmentPlan(partyId: string, data: any) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/installments`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
+  async deleteInstallmentPlan(partyId: string, id: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/installments/${id}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
 };

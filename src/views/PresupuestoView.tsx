@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { getThemeColors } from '../utils/theme';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { Tooltip } from '../components/Tooltip';
@@ -51,6 +52,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
   onReorderEntries,
   onConfirmEntry
 }) => {
+  const themeColors = getThemeColors();
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
   const [draggedItem, setDraggedItem] = useState<BudgetEntry | null>(null);
 
@@ -126,7 +128,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
         <div className="flex items-center gap-2">
           <span className="text-slate-400 text-sm font-bold uppercase tracking-wider text-[10px]">Filtrar por:</span>
           <select
-            className="bg-slate-900 border border-white/10 rounded-xl px-4 py-2.5 text-white text-xs font-bold outline-none focus:border-blue-500 uppercase tracking-wide cursor-pointer hover:bg-white/5 transition-colors [&>option]:bg-slate-900 [&>option]:text-white"
+            className={`${themeColors.input} rounded-xl px-4 py-2.5 text-white text-xs font-bold outline-none uppercase tracking-wide cursor-pointer hover:bg-white/5 transition-colors [&>option]:bg-slate-900 [&>option]:text-white`}
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
           >
@@ -294,23 +296,39 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                     </span>
                                                   </div>
                                                   <div className="flex items-center gap-3">
-                                                    <span className={`font-mono ${sub.category === CategoryType.INCOME ? 'text-emerald-400 font-bold' : ''}`}>
-                                                      {sub.category === CategoryType.INCOME ? '+' : ''}{formatMoney(sub.amount)}
+                                                    <span className={`font-mono flex items-center gap-2 ${sub.category === CategoryType.INCOME ? 'text-emerald-400 font-bold' : ''}`}>
+                                                      {sub.currency && sub.currency !== 'ARS' && sub.originalAmount && (
+                                                        <span className="text-[10px] text-slate-400 font-semibold bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
+                                                          {sub.currency} {sub.originalAmount.toFixed(2)}
+                                                        </span>
+                                                      )}
+                                                      <span>{sub.category === CategoryType.INCOME ? '+' : ''}{formatMoney(sub.amount)}</span>
                                                     </span>
-                                                    <button
-                                                      onClick={(ev) => { ev.stopPropagation(); setEditingEntry(sub); }}
-                                                      className="opacity-0 group-hover/sub:opacity-100 p-1 text-blue-500 hover:bg-blue-500/10 rounded transition-all"
-                                                      title="Editar consumo individual"
-                                                    >
-                                                      <i className="fas fa-pencil text-[10px]"></i>
-                                                    </button>
-                                                    <button
-                                                      onClick={(ev) => { ev.stopPropagation(); deleteEntry(sub.id); }}
-                                                      className="opacity-0 group-hover/sub:opacity-100 p-1 text-rose-500 hover:bg-rose-500/10 rounded transition-all"
-                                                      title="Eliminar consumo"
-                                                    >
-                                                      <i className="fas fa-trash text-[10px]"></i>
-                                                    </button>
+                                                    {sub.installmentRef ? (
+                                                      <div
+                                                        className="opacity-0 group-hover/sub:opacity-100 p-1 text-amber-500 hover:bg-amber-500/10 rounded transition-all cursor-help"
+                                                        title="Gestionar desde el módulo Cuotas / Tarjetas"
+                                                      >
+                                                        <i className="fas fa-circle-question text-[10px]"></i>
+                                                      </div>
+                                                    ) : (
+                                                      <>
+                                                        <button
+                                                          onClick={(ev) => { ev.stopPropagation(); setEditingEntry(sub); }}
+                                                          className="opacity-0 group-hover/sub:opacity-100 p-1 text-blue-500 hover:bg-blue-500/10 rounded transition-all"
+                                                          title="Editar consumo individual"
+                                                        >
+                                                          <i className="fas fa-pencil text-[10px]"></i>
+                                                        </button>
+                                                        <button
+                                                          onClick={(ev) => { ev.stopPropagation(); deleteEntry(sub.id); }}
+                                                          className="opacity-0 group-hover/sub:opacity-100 p-1 text-rose-500 hover:bg-rose-500/10 rounded transition-all"
+                                                          title="Eliminar consumo"
+                                                        >
+                                                          <i className="fas fa-trash text-[10px]"></i>
+                                                        </button>
+                                                      </>
+                                                    )}
                                                   </div>
                                                 </div>
                                               ))}
@@ -357,8 +375,8 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                               <i className="fas fa-check text-xs"></i>
                                             </button>
                                           )}
-                                          <button onClick={(ev) => { ev.stopPropagation(); setEditingEntry(e); }} className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-500 hover:bg-blue-500 hover:text-white transition-all shadow-lg hover:shadow-blue-500/30 flex items-center justify-center"><i className="fas fa-pencil text-xs"></i></button>
-                                          <button onClick={(ev) => { ev.stopPropagation(); deleteEntry(e.id); }} className="w-8 h-8 rounded-xl bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white transition-all shadow-lg hover:shadow-rose-500/30 flex items-center justify-center"><i className="fas fa-trash text-xs"></i></button>
+                                          <button onClick={(ev) => { ev.stopPropagation(); setEditingEntry(e); }} className={`w-8 h-8 rounded-xl ${themeColors.iconBg} hover:bg-opacity-100 hover:text-white transition-all shadow-lg flex items-center justify-center`} title="Editar movimiento"><i className="fas fa-pencil text-xs"></i></button>
+                                          <button onClick={(ev) => { ev.stopPropagation(); deleteEntry(e.id); }} className="w-8 h-8 rounded-xl bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white transition-all shadow-lg hover:shadow-rose-500/30 flex items-center justify-center" title="Eliminar movimiento"><i className="fas fa-trash text-xs"></i></button>
                                         </div>
                                       )}
                                       {(e.installmentRef || e.id.startsWith('card-agg-')) && <i className="fas fa-lock text-indigo-500/30 text-xs" title="Movimiento automático"></i>}
@@ -379,7 +397,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
 
       {/* Footer Total Consumo */}
       <Card variant="glass" className="border border-white/10 mt-8 relative overflow-hidden group">
-        <div className="absolute inset-0 bg-gradient-to-r from-slate-800 to-slate-900 opacity-90"></div>
+        <div className={`absolute inset-0 ${themeColors.card} opacity-90`}></div>
         <div className="absolute -right-10 -bottom-10 text-white/5 rotate-12 transform scale-150">
           <i className="fas fa-coins text-9xl"></i>
         </div>

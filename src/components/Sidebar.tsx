@@ -1,6 +1,7 @@
 import React from 'react';
 import { APP_TITLE_PREFIX, APP_TITLE_SUFFIX, APP_SUBTITLE } from '../config/constants';
 import { Tooltip } from './Tooltip';
+import { getThemeColors } from '../utils/theme';
 
 interface SidebarProps {
   sidebarOpen: boolean;
@@ -15,6 +16,7 @@ interface SidebarProps {
   formatMoney: (amount: number) => string;
   onExport: () => void;
   onLogout: () => void;
+  pendingInvitesCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -29,8 +31,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   projectedNetFlow,
   formatMoney,
   onExport,
-  onLogout
+  onLogout,
+  pendingInvitesCount = 0
 }) => {
+  const themeColors = getThemeColors();
+  const theme = localStorage.getItem('colorTheme') || 'new';
   return (
     <aside className={`
       fixed inset-y-0 left-0 z-50 w-72 lg:w-full glass 
@@ -39,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       transition-all duration-300 ease-in-out
       ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       overflow-visible
+      ${themeColors.sidebarBg}
     `}>
       {/* Mobile Close Button */}
       <button
@@ -69,7 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className={`flex flex-row items-center ${desktopSidebarOpen ? 'justify-start px-6' : 'justify-center px-2'} gap-2.5 mb-8 group mt-6 lg:mt-6 w-full transition-all duration-300`}>
         <div
           onClick={() => setActiveTab('dashboard')}
-          className="w-10 h-10 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 group-hover:scale-110 transition-transform duration-500 shine-hover cursor-pointer shrink-0"
+          className={`w-10 h-10 bg-gradient-to-tr ${themeColors.logoGradient} rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 group-hover:scale-110 transition-transform duration-500 shine-hover cursor-pointer shrink-0`}
         >
           <div className="w-8 h-8 flex items-center justify-center">
             <img src="/logo-n.png" alt="Logo" className="w-6 h-6 object-contain mix-blend-screen drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]" />
@@ -83,8 +89,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <nav className="space-y-3 flex-1 overflow-y-hidden hover:overflow-y-auto custom-scrollbar px-3">
         {[
-          { id: 'party', icon: 'fa-users', label: 'Gastos en Grupo (NUEVO)' },
           { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
+          { id: 'party', icon: 'fa-users', label: 'Gastos en Grupo' },
           { id: 'presupuesto', icon: 'fa-receipt', label: 'Movimientos' },
           { id: 'tarjetas', icon: 'fa-credit-card', label: 'Cuotas / Tarjetas' },
           { id: 'metas', icon: 'fa-bullseye', label: 'Metas' },
@@ -98,7 +104,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               if (window.innerWidth < 1024) setSidebarOpen(false);
             }}
             className={`w-full flex items-center ${desktopSidebarOpen ? 'justify-start px-4 gap-4' : 'justify-center px-0 gap-0'} py-3 rounded-2xl transition-all duration-300 relative overflow-hidden group ${activeTab === item.id
-              ? 'bg-gradient-to-r from-blue-600/20 to-transparent text-white shadow-lg shadow-blue-500/10 border-l-4 border-blue-500'
+              ? themeColors.sidebarActive
               : 'text-slate-400 hover:bg-white/5 hover:text-white'
               }`}
             title={!desktopSidebarOpen ? item.label : ''}
@@ -108,6 +114,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
             <i className={`fas ${item.icon} text-lg w-6 flex justify-center relative z-10 ${activeTab === item.id ? 'text-blue-400 drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]' : ''}`}></i>
             <span className={`font-bold text-sm relative z-10 transition-all duration-300 whitespace-nowrap overflow-hidden ${desktopSidebarOpen ? 'opacity-100 max-w-[150px]' : 'opacity-0 max-w-0 hidden'}`}>{item.label}</span>
+            {item.id === 'party' && pendingInvitesCount > 0 && (
+              <span className={`absolute ${desktopSidebarOpen ? 'right-4' : 'top-2 right-2'} bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full z-20 shadow-lg animate-pulse`}>
+                {pendingInvitesCount}
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -133,18 +144,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className={`mt-auto transition-all duration-300 ${desktopSidebarOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none h-0'}`}>
+        {/* User Profile Info */}
+        {desktopSidebarOpen && (
+          <div className="flex items-center gap-3 px-6 mb-6">
+            <div className="w-10 h-10 rounded-full bg-slate-800 border border-white/5 flex items-center justify-center font-bold text-blue-500 shadow-inner shrink-0 overflow-hidden">
+              {user?.avatar ? (
+                <img src={user.avatar} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                user?.username?.[0]?.toUpperCase() || 'U'
+              )}
+            </div>
+            <div className="overflow-hidden">
+              <p className="font-bold text-sm text-white truncate">
+                {user?.firstName ? `${user.firstName} ${user.lastName || ''}` : (user?.username || 'Usuario')}
+              </p>
+              <p className="text-[10px] text-slate-500 truncate" title={user?.email}>{user?.email}</p>
+            </div>
+          </div>
+        )}
+
         {/* Footer Links - Only visible when expanded */}
         {desktopSidebarOpen && (
           <div className="flex flex-wrap gap-x-4 gap-y-2 px-6 mb-2">
             <a href="/privacy" className="text-[10px] text-slate-500 hover:text-blue-400 transition-colors">Privacidad</a>
             <a href="/terminos" className="text-[10px] text-slate-500 hover:text-blue-400 transition-colors">Términos</a>
-            <span className="text-[9px] text-slate-600 block w-full mt-1">v1.2.0 (Party)</span>
           </div>
         )}
 
-        <div className="glass p-6 rounded-3xl border border-blue-500/10 relative group mx-4 mb-4">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-600/10 to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-500"></div>
-          <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest block mb-1 relative z-10">Balance Mensual</span>
+        <div className={`glass p-6 rounded-3xl border border-white/5 relative group mx-4 mb-4 ${themeColors.card}`}>
+          <div className={`absolute inset-0 bg-gradient-to-br ${theme === 'new' ? 'from-teal-600/10' : 'from-blue-600/10'} to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-500`}></div>
+          <span className={`text-[10px] font-black ${themeColors.accent} uppercase tracking-widest block mb-1 relative z-10`}>Balance Mensual</span>
           <p className={`text-xl font-black relative z-10 ${netFlow >= 0 ? 'text-white drop-shadow-[0_0_10px_rgba(16,185,129,0.3)]' : 'text-rose-400 drop-shadow-[0_0_10px_rgba(244,63,94,0.3)]'}`}>
             {formatMoney(netFlow)}
           </p>

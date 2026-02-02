@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getThemeColors } from '../utils/theme';
 import { SavingsGoal, BudgetEntry, AppState } from '../types';
 import { formatDate, generateUUID } from '../utils/helpers';
 import { Card } from '../components/Card';
@@ -91,6 +92,8 @@ export const MetasView: React.FC<MetasViewProps> = ({
   setEditingGoal,
   formatMoney
 }) => {
+  const theme = localStorage.getItem('colorTheme') || 'new';
+  const themeColors = getThemeColors();
   const [activeTab, setActiveTab] = useState<'goals' | 'achievements'>('goals');
   const [viewingGoal, setViewingGoal] = useState<SavingsGoal | null>(null);
 
@@ -117,7 +120,7 @@ export const MetasView: React.FC<MetasViewProps> = ({
       <div className="flex p-1 bg-slate-900/50 backdrop-blur-md rounded-2xl w-fit border border-white/5">
         <button
           onClick={() => setActiveTab('goals')}
-          className={`px-6 py-2 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${activeTab === 'goals' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:text-white'}`}
+          className={`px-6 py-2 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${activeTab === 'goals' ? (theme === 'new' ? 'bg-teal-600 shadow-teal-500/20' : 'bg-blue-600 shadow-blue-500/20') + ' text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
         >
           <i className="fas fa-bullseye"></i> Mis Metas
           <Tooltip content="Define objetivos de ahorro (Auto, Casa, Vacaciones) y asigna dinero mensualmente para cumplirlos." position="bottom" useIcon />
@@ -135,7 +138,7 @@ export const MetasView: React.FC<MetasViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <button
             onClick={() => setEditingGoal({ id: generateUUID(), name: '', targetAmount: 0, currentAmount: 0, icon: 'fa-piggy-bank' })}
-            className="group h-full min-h-[250px] border-2 border-dashed border-slate-800 rounded-[2.5rem] flex flex-col items-center justify-center p-12 hover:border-blue-500/50 hover:bg-blue-500/5 transition-all text-slate-600 hover:text-blue-500"
+            className={`group h-full min-h-[250px] border-2 border-dashed border-slate-800 rounded-[2.5rem] flex flex-col items-center justify-center p-12 hover:${theme === 'new' ? 'border-teal-500/50 bg-teal-500/5 text-teal-500' : 'border-blue-500/50 bg-blue-500/5 text-blue-500'} transition-all text-slate-600`}
           >
             <div className="w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
               <i className="fas fa-plus text-2xl"></i>
@@ -152,7 +155,7 @@ export const MetasView: React.FC<MetasViewProps> = ({
               onClick={() => setViewingGoal(g)}
               headerActions={
                 <div className="flex gap-2">
-                  <button onClick={(e) => { e.stopPropagation(); setEditingGoal(g); }} className="text-slate-500 hover:text-blue-500 p-2"><i className="fas fa-pencil"></i></button>
+                  <button onClick={(e) => { e.stopPropagation(); setEditingGoal(g); }} className={`text-slate-500 hover:${themeColors.accent} p-2`}><i className="fas fa-pencil"></i></button>
                 </div>
               }
             >

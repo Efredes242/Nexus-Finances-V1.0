@@ -4,20 +4,20 @@ import React from 'react';
 interface CardProps {
   children: React.ReactNode;
   className?: string;
-  title?: string;
-  subtitle?: string;
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
   headerActions?: React.ReactNode;
   onClick?: () => void;
   variant?: 'default' | 'glass' | 'neon' | 'outlined';
   noPadding?: boolean;
 }
 
-export const Card: React.FC<CardProps> = ({ 
-  children, 
-  className = '', 
-  title, 
-  subtitle, 
-  headerActions, 
+export const Card: React.FC<CardProps> = ({
+  children,
+  className = '',
+  title,
+  subtitle,
+  headerActions,
   onClick,
   variant = 'default',
   noPadding = false
@@ -36,7 +36,7 @@ export const Card: React.FC<CardProps> = ({
   };
 
   return (
-    <div 
+    <div
       className={`${getVariantClasses()} rounded-2xl overflow-hidden ${onClick ? 'cursor-pointer' : ''} ${className}`}
       onClick={onClick}
     >

@@ -1,0 +1,2 @@
+-- Migration: Add first_payment_date to party_expenses
+-- ALTER TABLE party_expenses ADD COLUMN first_payment_date TEXT;

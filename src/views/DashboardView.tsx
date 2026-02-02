@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getThemeColors } from '../utils/theme';
 import {
   AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Sector
@@ -72,6 +73,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   totalGoalsSaved,
   formatMoney
 }) => {
+  const theme = localStorage.getItem('colorTheme') || 'new';
+  const themeColors = getThemeColors();
+  const primaryHex = theme === 'new' ? '#2dd4bf' : '#3b82f6'; // Teal-400 vs Blue-500
+
   const [activeIndex, setActiveIndex] = useState(0);
   const onPieEnter = (_: any, index: number) => {
     setActiveIndex(index);
@@ -86,10 +91,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
       {/* 0. Welcome Banner */}
-      <div className="lg:col-span-3 bg-gradient-to-r from-blue-900/40 to-indigo-900/40 border border-white/5 rounded-3xl p-6 lg:p-8 relative overflow-hidden group">
-        <div className="absolute inset-0 bg-blue-500/5 blur-3xl group-hover:bg-blue-500/10 transition-colors duration-1000"></div>
+      <div className={`lg:col-span-3 bg-gradient-to-r ${theme === 'new' ? 'from-teal-900/40 to-emerald-900/40' : 'from-blue-900/40 to-indigo-900/40'} border border-white/5 rounded-3xl p-6 lg:p-8 relative overflow-hidden group`}>
+        <div className={`absolute inset-0 ${theme === 'new' ? 'bg-teal-500/5 group-hover:bg-teal-500/10' : 'bg-blue-500/5 group-hover:bg-blue-500/10'} blur-3xl transition-colors duration-1000`}></div>
         <div className="relative z-10 flex flex-col sm:flex-row gap-6 items-center text-center sm:text-left">
-          <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-2xl shadow-lg shadow-blue-500/20 shrink-0">
+          <div className={`w-16 h-16 rounded-full bg-gradient-to-br ${themeColors.logoGradient} flex items-center justify-center text-white text-2xl shadow-lg shadow-blue-500/20 shrink-0`}>
             {user.avatar ? (
               <img src={user.avatar} className="w-full h-full rounded-full object-cover" alt="User" />
             ) : (
@@ -98,7 +103,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div>
             <h2 className="text-2xl lg:text-3xl font-black text-white tracking-tight">
-              {greeting}, <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400">{user.firstName || user.username}</span>!
+              {greeting}, <span className={`text-transparent bg-clip-text bg-gradient-to-r ${theme === 'new' ? 'from-teal-400 to-emerald-400' : 'from-blue-400 to-indigo-400'}`}>{user.firstName || user.username}</span>!
             </h2>
             <p className="text-slate-400 font-medium text-sm lg:text-base">Aquí tienes el resumen de tus finanzas para hoy.</p>
           </div>
@@ -112,8 +117,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <AreaChart data={trendData}>
               <defs>
                 <linearGradient id="colorIngresos" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  <stop offset="5%" stopColor={primaryHex} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={primaryHex} stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="colorGastos" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.3} />
@@ -141,9 +146,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <p className="text-slate-400 text-xs mb-1 font-medium uppercase tracking-wider">{label}</p>
                         {payload.map((p: any, idx: number) => (
                           <div key={idx} className="flex items-center gap-2 mb-1">
-                            <div className={`w-2 h-2 rounded-full ${p.name === 'Ingresos' ? 'bg-blue-500' : 'bg-rose-500'}`}></div>
+                            <div className={`w-2 h-2 rounded-full ${p.name === 'Ingresos' ? (theme === 'new' ? 'bg-teal-500' : 'bg-blue-500') : 'bg-rose-500'}`}></div>
                             <span className="text-slate-300 text-xs">{p.name}:</span>
-                            <span className={`text-sm font-bold ${p.name === 'Ingresos' ? 'text-blue-400' : 'text-rose-400'}`}>
+                            <span className={`text-sm font-bold ${p.name === 'Ingresos' ? (theme === 'new' ? 'text-teal-400' : 'text-blue-400') : 'text-rose-400'}`}>
                               {formatMoney(p.value)}
                             </span>
                           </div>
@@ -157,7 +162,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <Area
                 type="monotone"
                 dataKey="Ingresos"
-                stroke="#3b82f6"
+                stroke={primaryHex}
                 strokeWidth={3}
                 fillOpacity={1}
                 fill="url(#colorIngresos)"
@@ -179,14 +184,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* 2. Stats Rápidos */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 lg:col-span-3">
         {/* New Balance Card (Actual vs Projected) */}
-        <Card className="group hover:-translate-y-1 transition-transform duration-300 relative !overflow-visible shine-hover col-span-1 md:col-span-2 lg:col-span-1 border-blue-500/30" variant="glass">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-600/20 to-cyan-500/10 opacity-50 rounded-2xl"></div>
+        <Card className={`group hover:-translate-y-1 transition-transform duration-300 relative !overflow-visible shine-hover col-span-1 md:col-span-2 lg:col-span-1 ${theme === 'new' ? 'border-teal-500/30' : 'border-blue-500/30'}`} variant="glass">
+          <div className={`absolute inset-0 bg-gradient-to-br ${theme === 'new' ? 'from-teal-600/20 to-emerald-500/10' : 'from-blue-600/20 to-cyan-500/10'} opacity-50 rounded-2xl`}></div>
           <div className="relative z-10 flex flex-col justify-center h-full">
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center text-blue-400">
+              <div className={`w-10 h-10 rounded-xl ${theme === 'new' ? 'bg-teal-500/20 text-teal-400' : 'bg-blue-500/20 text-blue-400'} flex items-center justify-center`}>
                 <i className="fas fa-chart-line text-lg"></i>
               </div>
-              <span className="text-[10px] font-black text-blue-300 uppercase tracking-widest">Saldo Proyectado</span>
+              <span className={`text-[10px] font-black ${theme === 'new' ? 'text-teal-300' : 'text-blue-300'} uppercase tracking-widest`}>Saldo Proyectado</span>
               <InfoTooltip content="Esta es la proyección de tu saldo final considerando gastos e ingresos marcados como 'Provisorios'." position="top" useIcon />
             </div>
 
@@ -202,7 +207,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="mt-2 w-full bg-slate-800/50 h-1.5 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full ${projectedNetFlow >= 0 ? 'bg-blue-500' : 'bg-rose-500'}`}
+                className={`h-full rounded-full ${projectedNetFlow >= 0 ? (theme === 'new' ? 'bg-teal-500' : 'bg-blue-500') : 'bg-rose-500'}`}
                 style={{ width: '100%' }} // Simple bar for now
               ></div>
             </div>
@@ -217,9 +222,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             label: 'Ahorro Real',
             val: (currentTotals[CategoryType.SAVINGS] || 0) + totalGoalsSaved,
             icon: 'fa-piggy-bank',
-            color: 'text-blue-400',
-            bg: 'from-blue-500/10 to-transparent',
-            customValue: `${formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} / ${formatMoney(totalGoalsSaved)}`
+            color: theme === 'new' ? 'text-teal-400' : 'text-blue-400',
+            bg: theme === 'new' ? 'from-teal-500/10 to-transparent' : 'from-blue-500/10 to-transparent',
+            customValue: `${formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} / ${formatMoney(totalGoalsSaved)}`,
+            tooltip: "Suma de depósitos directos a Ahorro + Aportes a Metas."
           }
         ].map((stat, i) => (
           <Card key={i} className={`group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden shine-hover`} variant="glass">
@@ -229,7 +235,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <i className={`fas ${stat.icon} text-2xl ${stat.color} drop-shadow-md`}></i>
               </div>
               <div>
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">{stat.label}</span>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</span>
+                  {'tooltip' in stat && <InfoTooltip content={stat.tooltip as string} position="top" useIcon />}
+                </div>
                 <p className={`text-2xl font-black text-white tracking-tight`}>{'customValue' in stat ? stat.customValue : formatMoney(stat.val)}</p>
               </div>
             </div>

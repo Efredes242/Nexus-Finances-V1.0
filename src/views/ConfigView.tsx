@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getThemeColors } from '../utils/theme';
 import { AppConfig } from '../types';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -15,6 +16,8 @@ interface ConfigViewProps {
 }
 
 export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onUpdateConfig, onCardRenames, usedCardNames = [], onSyncToCloud }) => {
+  const theme = localStorage.getItem('colorTheme') || 'new';
+  const themeColors = getThemeColors();
   const [configBuffer, setConfigBuffer] = useState<AppConfig>(initialConfig);
   // Track cards with their original names to handle renames correctly
   const [cardTracker, setCardTracker] = useState<{ originalName: string | null, currentName: string }[]>(
@@ -130,7 +133,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onU
               <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Símbolo Monetario</label>
               <div className="relative">
                 <select
-                  className="w-full bg-slate-900 border border-white/10 rounded-2xl p-4 text-white outline-none focus:border-blue-500 transition-all font-bold text-center appearance-none cursor-pointer"
+                  className={`w-full bg-slate-900 border border-white/10 rounded-2xl p-4 text-white outline-none ${theme === 'new' ? 'focus:border-teal-500' : 'focus:border-blue-500'} transition-all font-bold text-center appearance-none cursor-pointer`}
                   value={configBuffer.currency}
                   onChange={e => setConfigBuffer(prev => ({ ...prev, currency: e.target.value }))}
                 >
@@ -146,6 +149,34 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onU
                   <i className="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Theme Toggle */}
+          <div className="mt-6 pt-6 border-t border-white/10">
+            <div className="space-y-3">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Esquema de Colores</label>
+              <button
+                onClick={() => {
+                  const currentTheme = localStorage.getItem('colorTheme') || 'new';
+                  const newTheme = currentTheme === 'new' ? 'original' : 'new';
+                  localStorage.setItem('colorTheme', newTheme);
+                  window.location.reload();
+                }}
+                className="w-full bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white rounded-2xl p-4 font-bold transition-all flex items-center justify-center gap-3"
+              >
+                <i className="fas fa-palette"></i>
+                <span>
+                  {(localStorage.getItem('colorTheme') || 'new') === 'new'
+                    ? 'Cambiar a Colores Originales (Azul/Púrpura)'
+                    : 'Cambiar a Colores Nuevos (Teal/Verde)'}
+                </span>
+              </button>
+              <p className="text-xs text-slate-500 text-center">
+                Tema actual: <span className="font-bold text-white">
+                  {(localStorage.getItem('colorTheme') || 'new') === 'new' ? 'Teal/Verde (Nuevo)' : 'Azul/Púrpura (Original)'}
+                </span>
+              </p>
             </div>
           </div>
         </Card>
@@ -300,7 +331,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ user, initialConfig, onU
         </div>
       </div>
 
-      <div className="fixed bottom-4 left-0 right-4 lg:left-80 p-4 bg-[#020617]/95 backdrop-blur-xl border border-white/5 rounded-2xl flex justify-between items-center animate-in slide-in-from-bottom-4 duration-500 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+      <div className={`fixed bottom-4 left-0 right-4 lg:left-80 p-4 ${themeColors.sidebarBg} backdrop-blur-xl border border-white/5 rounded-2xl flex justify-between items-center animate-in slide-in-from-bottom-4 duration-500 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]`}>
         <h3 className="text-sm font-black text-white/50 uppercase tracking-widest hidden sm:block">Configuración</h3>
         <div className="flex gap-4 w-full sm:w-auto justify-end">
           <Button

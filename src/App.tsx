@@ -131,6 +131,9 @@ const App: React.FC = () => {
     return state.config.currency + amount.toLocaleString();
   };
 
+  // --- PENDING INVITES STATE ---
+  const [pendingInvitesCount, setPendingInvitesCount] = useState(0);
+
   // --- SYNC WITH DB ---
   useEffect(() => {
     if (!user) return;
@@ -139,6 +142,15 @@ const App: React.FC = () => {
       setLoadingData(true);
       try {
         const data = await api.syncData();
+
+        // Fetch pending invites
+        try {
+          const invites = await api.getInvitations();
+          setPendingInvitesCount(invites.length);
+        } catch (e) {
+          console.error("Error fetching invites", e);
+        }
+
         if (data) {
           const hasDbData = data.entries.length > 0 || data.goals.length > 0 || data.installments.length > 0 || data.config || (data.categoryBudgets && data.categoryBudgets.length > 0);
 
@@ -527,8 +539,22 @@ const App: React.FC = () => {
   const deleteEntry = (id: string) => {
     const isGenerated = id.startsWith('inst-') || id.startsWith('card-agg-');
 
+    // Helper function to find entry (recursive)
+    const findEntryRecursive = (entries: BudgetEntry[], targetId: string): BudgetEntry | undefined => {
+      for (const entry of entries) {
+        if (entry.id === targetId) return entry;
+        if (entry.subEntries) {
+          const found = findEntryRecursive(entry.subEntries, targetId);
+          if (found) return found;
+        }
+      }
+      return undefined;
+    };
+
     // Actualizar metas si es necesario
-    const entryToDelete = state.budgets[state.currentMonth]?.entries.find(e => e.id === id);
+    // Use recursive find to locate the entry even if it's nested
+    const entryToDelete = findEntryRecursive(state.budgets[state.currentMonth]?.entries || [], id);
+
     const goalsToUpdate = new Map<string, SavingsGoal>();
 
     if (entryToDelete && entryToDelete.goalId) {
@@ -544,18 +570,29 @@ const App: React.FC = () => {
       let newEntries;
 
       if (isGenerated) {
+        // If it's a generated ID, we mark it as deleted. 
+        // We need to check if it exists in the persisted entries.
         const existingEntry = currentBudget.entries.find(e => e.id === id);
+
         if (existingEntry) {
+          // It's already in the DB/State, mark as deleted
           newEntries = currentBudget.entries.map(e => e.id === id ? { ...e, deleted: true } : e);
         } else {
-          const itemToDelete = currentBudgetEntries.find(e => e.id === id);
+          // It's not in DB yet (dynamic), but we want to delete it.
+          // We need to find it in the CALCULATED currentBudgetEntries to get its data
+          // and add it to state as "deleted" so it doesn't show up next time.
+          const itemToDelete = findEntryRecursive(currentBudgetEntries, id);
+
           if (itemToDelete) {
+            // We add it to the state explicitly marked as deleted
             newEntries = [...currentBudget.entries, { ...itemToDelete, deleted: true }];
           } else {
+            // Can't find it, nothing to do
             newEntries = currentBudget.entries;
           }
         }
       } else {
+        // Standard manual entry, just filter it out
         newEntries = currentBudget.entries.filter(e => e.id !== id);
       }
 
@@ -575,11 +612,14 @@ const App: React.FC = () => {
     });
 
     if (isGenerated) {
-      const itemToDelete = currentBudgetEntries.find(e => e.id === id);
+      // Logic for generated items (like installments)
+      // Check if we need to call API to save this "deletion" state
+      const itemToDelete = findEntryRecursive(currentBudgetEntries, id);
       if (itemToDelete) {
         api.saveEntry({ ...itemToDelete, deleted: true });
       }
     } else {
+      // Standard deletion
       api.deleteEntry(id);
     }
     goalsToUpdate.forEach(g => api.saveGoal(g));
@@ -776,6 +816,28 @@ const App: React.FC = () => {
       </div>
     );
   }
+  // --- ADMIN BREADCRUMB ---
+  // --- APP BREADCRUMB ---
+  const adminBreadcrumb = (
+    <div className="bg-[#1e1e1e] rounded-lg border border-white/10 text-xs text-gray-400 p-2 font-mono flex items-center gap-1 select-all shadow-lg w-fit">
+      <span className="text-blue-400">Inicio</span>
+      {activeTab === 'dashboard' && <span className="text-purple-400"> &gt; Panel Principal</span>}
+      {activeTab === 'party' && (
+        <>
+          <span>&gt;</span>
+          <span className="text-purple-400">Gastos en Grupo</span>
+          <span>&gt;</span>
+          <span className="text-white font-bold">Detalle de Grupo</span>
+        </>
+      )}
+      {activeTab === 'presupuesto' && <span className="text-purple-400"> &gt; Presupuesto Mensual</span>}
+      {activeTab === 'annual' && <span className="text-purple-400"> &gt; Vista Anual</span>}
+      {activeTab === 'tarjetas' && <span className="text-purple-400"> &gt; Billetera</span>}
+      {activeTab === 'metas' && <span className="text-purple-400"> &gt; Metas de Ahorro</span>}
+      {activeTab === 'config' && <span className="text-purple-400"> &gt; Configuración</span>}
+      {activeTab === 'admin' && <span className="text-purple-400"> &gt; Admin Panel</span>}
+    </div>
+  );
 
   return (
     <Layout
@@ -819,10 +881,12 @@ const App: React.FC = () => {
           totalIncome={currentTotals[CategoryType.INCOME] || 0}
           formatMoney={formatMoney}
           user={user}
+          adminBreadcrumb={adminBreadcrumb}
         />
       }
       modals={
         <>
+          <InvitationModal />
           {editingEntry && (
             <EntryModal
               entry={editingEntry}
@@ -986,7 +1050,7 @@ const App: React.FC = () => {
 
       {/* TAB: GASTOS EN GRUPO */}
       {activeTab === 'party' && (
-        <PartyView user={user} />
+        <PartyView user={user} currentMonth={state.currentMonth} />
       )}
 
       {/* TAB: PRESUPUESTO / MOVIMIENTOS */}

@@ -1,4 +1,5 @@
 import React from 'react';
+import { getThemeColors } from '../utils/theme';
 
 interface LayoutProps {
   sidebar: React.ReactNode;
@@ -25,8 +26,9 @@ export const Layout: React.FC<LayoutProps> = ({
   titlePrefix,
   titleSuffix
 }) => {
+  const themeColors = getThemeColors();
   return (
-    <div className="flex h-screen text-slate-50 font-sans overflow-hidden bg-[#020617] relative">
+    <div className={`flex h-screen text-slate-50 font-sans overflow-hidden ${themeColors.background} relative`}>
 
       {/* --- MODALS --- */}
       {modals}
@@ -40,12 +42,12 @@ export const Layout: React.FC<LayoutProps> = ({
       )}
 
       {/* --- SIDEBAR SLOT --- */}
-      <div className={`transition-all duration-300 ease-in-out shrink-0 relative z-30 ${desktopSidebarOpen ? 'w-[260px]' : 'w-[80px]'}`}>
+      <div className={`transition-all duration-300 ease-in-out shrink-0 relative z-50 w-0 ${desktopSidebarOpen ? 'lg:w-[260px]' : 'lg:w-[80px]'}`}>
         {sidebar}
       </div>
 
       {/* --- CONTENIDO PRINCIPAL --- */}
-      <main className="flex-1 m-0 lg:my-4 lg:mr-4 lg:ml-10 flex flex-col overflow-hidden relative min-h-0 bg-[#020617]">
+      <main className={`flex-1 m-0 lg:my-4 lg:mr-4 lg:ml-10 flex flex-col overflow-hidden relative min-h-0 ${themeColors.background}`}>
 
         {/* Mobile Header Bar */}
         <div className="lg:hidden flex items-center justify-between mb-4 px-2">

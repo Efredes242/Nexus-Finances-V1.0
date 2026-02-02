@@ -1,4 +1,5 @@
 import React from 'react';
+import { getThemeColors } from '../utils/theme';
 import { InstallmentPurchase, CategoryType } from '../types';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -22,6 +23,10 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
   setViewingInstallment,
   deleteInstallment
 }) => {
+  const theme = localStorage.getItem('colorTheme') || 'new';
+  const themeColors = getThemeColors();
+  const progressGradient = theme === 'new' ? 'from-teal-600 to-emerald-500' : 'from-blue-600 to-indigo-500';
+
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-center px-4">
@@ -56,8 +61,8 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
           ).sort((a, b) => a[0].localeCompare(b[0])).map(([cardName, purchases]) => (
             <div key={cardName} className="space-y-4">
               <div className="flex items-center gap-3 px-2 border-b border-white/5 pb-2">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600/20 to-purple-600/20 flex items-center justify-center border border-white/10">
-                  <i className="fas fa-credit-card text-blue-400"></i>
+                <div className={`w-10 h-10 rounded-xl ${themeColors.iconBg} flex items-center justify-center border border-white/10`}>
+                  <i className={`fas fa-credit-card ${themeColors.accent}`}></i>
                 </div>
                 <div>
                   <h4 className="text-lg font-black text-white uppercase tracking-wider">{cardName}</h4>
@@ -81,12 +86,12 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
                             <p className="text-xl font-black">{formatMoney(p.totalAmount)}</p>
                           </div>
                           <div className="text-right">
-                            <span className="text-sm font-black text-blue-500">{Math.max(0, diff + 1)}/{p.installments}</span>
+                            <span className={`text-sm font-black ${themeColors.accent}`}>{Math.max(0, diff + 1)}/{p.installments}</span>
                           </div>
                         </div>
 
                         <div className="h-2.5 bg-slate-900 rounded-full overflow-hidden border border-white/5 shadow-inner">
-                          <div className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 transition-all duration-1000" style={{ width: `${progress}%` }}></div>
+                          <div className={`h-full bg-gradient-to-r ${progressGradient} transition-all duration-1000`} style={{ width: `${progress}%` }}></div>
                         </div>
 
                         <div className="flex gap-2 pt-2">

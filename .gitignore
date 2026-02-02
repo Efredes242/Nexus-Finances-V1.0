@@ -33,3 +33,10 @@ dist-stage-v2/
 build/
 *.exe
 *.zip
+
+# Wrangler
+.wrangler/
+.wrangler
+
+# Vite
+vite.config.ts.timestamp*
