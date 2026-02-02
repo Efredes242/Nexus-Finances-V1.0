@@ -283,7 +283,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
     };
 
     const handleRemoveMember = async (memberId: string, memberName: string) => {
-        if (!selectedParty || !confirm(`Â¿EstÃ¡s seguro de eliminar a ${memberName} del grupo?`)) return;
+        if (!selectedParty || !confirm(`¿Estás seguro de eliminar a ${memberName} del grupo?`)) return;
         try {
             await api.removeMember(memberId);
             loadPartyDetails(selectedParty.id);
@@ -305,47 +305,40 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
 
         const sharePerPersonOneOff = totalOneOff / (members.length || 1);
 
-        // 2. Installments (Use Filter Month)
-        // Need to determine if each installment plan is active this month
+        // 2. Installments (Multi-Participant Support)
         const currentYear = viewYear;
         const currentMonthVal = viewMonth; // 1-12
+        const installmentImpactByUser: Record<string, number> = {};
 
-        // Mapping for display
-        const installmentImpactByUser: Record<string, number> = {}; // How much they PAID for installments vs DEBT
-        // Actually, for installments, it's P2P usually (or 50/50).
-        // If Payer Paid X, and Debtor Owes X/2.
-        // Impact on Payer: +X/2 (outcome: he paid full, so he is owed half).
-        // Impact on Debtor: -X/2 (outcome: he owes half).
+        installments.forEach(plan => {
+            const [startY, startM] = plan.start_date.split('-').map(Number);
+            const duration = plan.installments_count;
 
-        let totalInstallmentsThisMonth = 0;
-
-        // Note: D1 returns snake_case for fields
-        installments.forEach(inst => {
-            const [startY, startM] = inst.start_date.split('-').map(Number);
-            const duration = inst.installments_count;
-
-            // Calc end date
-            // Simple check: convert both to month index
+            // Check if plan is active this month
             const startIdx = startY * 12 + (startM - 1);
             const currentIdx = currentYear * 12 + (currentMonthVal - 1);
             const endIdx = startIdx + duration - 1;
 
             if (currentIdx >= startIdx && currentIdx <= endIdx) {
                 // Active this month!
-                const monthlyAmount = inst.installment_amount; // already calculated as total/count/2 usually? 
-                // Wait, DB stores `installment_amount` which is the DEBT part?
-                // In InstallmentSimulator: `const monthlyDebt = monthlyTotal / 2;` -> saved as `installment_amount`.
-                // So this IS the debt amount.
+                const monthlyInstallmentAmount = plan.installment_amount; // Amount per person per month
+                const payerId = plan.payer_id;
 
-                const payerId = inst.payer_id;
-                const debtorId = inst.debtor_id;
+                // Get participants (could be in 'participants' field or fallback to debtor_id)
+                let participants = [];
+                if (plan.participants && Array.isArray(plan.participants)) {
+                    participants = plan.participants;
+                } else if (plan.debtor_id) {
+                    participants = [plan.debtor_id];
+                }
 
-                // Payer is OWED this amount.
-                installmentImpactByUser[payerId] = (installmentImpactByUser[payerId] || 0) + monthlyAmount;
-                // Debtor OWES this amount.
-                installmentImpactByUser[debtorId] = (installmentImpactByUser[debtorId] || 0) - monthlyAmount;
-
-                totalInstallmentsThisMonth += monthlyAmount * 2; // Total valid movement
+                // For each participant: they OWE the payer
+                participants.forEach(participantId => {
+                    // Payer RECEIVES from this participant
+                    installmentImpactByUser[payerId] = (installmentImpactByUser[payerId] || 0) + monthlyInstallmentAmount;
+                    // Participant OWES to payer
+                    installmentImpactByUser[participantId] = (installmentImpactByUser[participantId] || 0) - monthlyInstallmentAmount;
+                });
             }
         });
 
@@ -366,7 +359,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
         return balances;
     };
 
-    const balances = calculateBalances();
+    const balances = React.useMemo(() => calculateBalances(), [members, expenses, installments, viewYear, viewMonth]);
 
     return (
         <div className="p-6 text-white space-y-6 relative">
@@ -545,6 +538,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                             currentUser={user}
                             partyId={selectedParty.id}
                             currentMonth={`${viewYear}-${String(viewMonth).padStart(2, '0')}`}
+                            nicknames={nicknames}
                         />
                     </div>
                 </div>
@@ -622,11 +616,11 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                             {inviteMode === 'guest' && (
                                 <>
                                     <p className="text-gray-400 text-sm mb-4">
-                                        Los invitados virtuales no necesitan cuenta. Ãšsalos para simular gastos con personas que no usan la app.
+                                        Los invitados virtuales no necesitan cuenta. Úsalos para simular gastos con personas que no usan la app.
                                     </p>
                                     <input
                                         type="text"
-                                        placeholder="Nombre del invitado (ej: Juan PÃ©rez)"
+                                        placeholder="Nombre del invitado (ej: Juan Pérez)"
                                         className="w-full p-3 bg-black/20 border border-white/10 rounded-lg text-white mb-6 focus:border-purple-500 outline-none"
                                         value={guestName}
                                         onChange={e => setGuestName(e.target.value)}
@@ -650,7 +644,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                                     onClick={inviteMode === 'email' ? handleInvite : handleAddGuest}
                                     className="bg-purple-600"
                                 >
-                                    {inviteMode === 'email' ? 'Enviar InvitaciÃ³n' : 'Agregar Invitado'}
+                                    {inviteMode === 'email' ? 'Enviar Invitación' : 'Agregar Invitado'}
                                 </Button>
                             </div>
                         </Card>
@@ -667,7 +661,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                             <h3 className="text-xl font-bold mb-4">{expenseForm.id ? 'Editar Gasto' : 'Agregar Gasto Compartido'}</h3>
                             <div className="space-y-4">
                                 <div>
-                                    <label className="text-sm text-gray-400">DescripciÃ³n</label>
+                                    <label className="text-sm text-gray-400">Descripción</label>
                                     <input
                                         value={expenseForm.description}
                                         onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
@@ -685,7 +679,7 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string }> = ({ user
                                     />
                                 </div>
                                 <div>
-                                    <label className="text-sm text-gray-400">CategorÃ­a</label>
+                                    <label className="text-sm text-gray-400">Categoría</label>
                                     <select
                                         value={expenseForm.category}
                                         onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}

@@ -508,23 +508,57 @@ app.post('/api/parties/:partyId/installments', authMiddleware, async (c) => {
 
     const id = crypto.randomUUID();
     const createdAt = Date.now();
-    const perPersonAmount = totalAmount / (participants.length * installments);
+    // participantIds contains only debtors, not the payer
+    // Total people splitting the cost = participants + payer
+    const totalPeople = participants.length + 1;
+    const perPersonAmount = totalAmount / (totalPeople * installments);
     const participantsJson = JSON.stringify(participants);
 
     try {
-        // Insert with new participants column
-        // We still populate debtor_id with the first participant for legacy compatibility/display, 
-        // but now it's just a text field without strictly enforced user FK (allows guests)
+        const user = c.get('user');
+        const createdBy = user.id;
+
         await c.env.DB.prepare(
-            'INSERT INTO installment_plans (id, party_id, description, total_amount, installments_count, installment_amount, payer_id, debtor_id, participants, start_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO installment_plans (id, party_id, description, total_amount, installments_count, installment_amount, payer_id, debtor_id, participants, start_date, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
-            .bind(id, partyId, description, totalAmount, installments, perPersonAmount, payerId, participants[0], participantsJson, startMonth, createdAt)
+            .bind(id, partyId, description, totalAmount, installments, perPersonAmount, payerId, participants[0], participantsJson, startMonth, createdAt, createdBy)
             .run();
 
         return c.json({ id, success: true });
     } catch (error: any) {
         console.error('Error creating installment plan:', error);
         return c.json({ error: 'Failed to create plan', details: error.message }, 500);
+    }
+});
+
+// Update Installment Plan
+app.put('/api/parties/:partyId/installments/:id', authMiddleware, async (c) => {
+    const { partyId, id } = c.req.param();
+    const user = c.get('user');
+    const body = await c.req.json();
+    const { description, totalAmount, installments, payerId, participantIds, debtorId, startMonth } = body;
+
+    // Check ownership
+    const existing = await c.env.DB.prepare('SELECT created_by FROM installment_plans WHERE id = ?').bind(id).first();
+    if (!existing || existing.created_by !== user.id) {
+        return c.json({ error: 'Unauthorized to edit this plan' }, 403);
+    }
+
+    const participants = participantIds || (debtorId ? [debtorId] : []);
+    const totalPeople = participants.length + 1;
+    const perPersonAmount = totalAmount / (totalPeople * installments);
+    const participantsJson = JSON.stringify(participants);
+
+    try {
+        await c.env.DB.prepare(
+            'UPDATE installment_plans SET description = ?, total_amount = ?, installments_count = ?, installment_amount = ?, payer_id = ?, debtor_id = ?, participants = ?, start_date = ? WHERE id = ?'
+        )
+            .bind(description, totalAmount, installments, perPersonAmount, payerId, participants[0], participantsJson, startMonth, id)
+            .run();
+
+        return c.json({ success: true });
+    } catch (error: any) {
+        return c.json({ error: 'Failed to update plan', details: error.message }, 500);
     }
 });
 

@@ -821,7 +821,7 @@ const App: React.FC = () => {
   const adminBreadcrumb = (
     <div className="bg-[#1e1e1e] rounded-lg border border-white/10 text-xs text-gray-400 p-2 font-mono flex items-center gap-1 select-all shadow-lg w-fit">
       <span className="text-blue-400">Inicio</span>
-      {activeTab === 'dashboard' && <span className="text-purple-400"> &gt; Panel Principal</span>}
+      {activeTab === 'dashboard' && <span className="text-purple-400"> &gt; Dashboard</span>}
       {activeTab === 'party' && (
         <>
           <span>&gt;</span>
@@ -830,10 +830,10 @@ const App: React.FC = () => {
           <span className="text-white font-bold">Detalle de Grupo</span>
         </>
       )}
-      {activeTab === 'presupuesto' && <span className="text-purple-400"> &gt; Presupuesto Mensual</span>}
+      {activeTab === 'presupuesto' && <span className="text-purple-400"> &gt; Movimientos</span>}
       {activeTab === 'annual' && <span className="text-purple-400"> &gt; Vista Anual</span>}
-      {activeTab === 'tarjetas' && <span className="text-purple-400"> &gt; Billetera</span>}
-      {activeTab === 'metas' && <span className="text-purple-400"> &gt; Metas de Ahorro</span>}
+      {activeTab === 'tarjetas' && <span className="text-purple-400"> &gt; Cuotas / Tarjetas</span>}
+      {activeTab === 'metas' && <span className="text-purple-400"> &gt; Metas</span>}
       {activeTab === 'config' && <span className="text-purple-400"> &gt; Configuración</span>}
       {activeTab === 'admin' && <span className="text-purple-400"> &gt; Admin Panel</span>}
     </div>

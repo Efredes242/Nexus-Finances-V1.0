@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from './Card';
 import { Button } from './Button';
-import { Plus, Trash2, Calendar, DollarSign, TrendingUp, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Calendar, DollarSign, TrendingUp, Loader2, Pencil } from 'lucide-react';
 import { Tooltip as InfoTooltip } from './Tooltip';
 import { getThemeColors } from '../utils/theme';
 import { api } from '../services/api';
@@ -16,6 +16,8 @@ interface InstallmentItem {
     payerId: string;
     debtorId: string;
     startDate: string; // YYYY-MM
+    createdBy?: string;
+    participants?: string[];
 }
 
 interface MonthlyProjection {
@@ -30,11 +32,37 @@ interface MonthlyProjection {
     netAmount: number;
 }
 
-export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, partyId: string, currentMonth?: string }> = ({ members, currentUser, partyId, currentMonth }) => {
+export const InstallmentSimulator: React.FC<{
+    members: any[],
+    currentUser: any,
+    partyId: string,
+    currentMonth?: string,
+    nicknames?: Record<string, string>
+}> = ({ members, currentUser, partyId, currentMonth, nicknames }) => {
     const themeColors = getThemeColors();
     const [items, setItems] = useState<InstallmentItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
+
+    // Sync member names (if they change in parent via nicknames)
+    const getMemberName = (id: string) => {
+        if (!id) return 'Usuario (Eliminado)';
+        const m = members.find(m =>
+            String(m.id) === String(id) ||
+            String(m.memberId) === String(id) ||
+            String((m as any).id) === String(id) ||
+            String((m as any).memberId) === String(id)
+        );
+
+        if (m) {
+            const nickname = (nicknames && nicknames[m.memberId]) || m.nickname;
+            const name = nickname || m.username || m.firstName || m.email || `Usuario ${String(id).substring(0, 4)}`;
+            return String(name).replace(/0+$/, '');
+        }
+
+        return 'Usuario (Eliminado)';
+    };
 
     // Form State
     const [description, setDescription] = useState('');
@@ -74,7 +102,9 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
                 installmentAmount: d.installment_amount,
                 payerId: d.payer_id,
                 debtorId: d.debtor_id,
-                startDate: d.start_date
+                startDate: d.start_date,
+                createdBy: d.created_by,
+                participants: d.participants
             }));
             setItems(mappedItems);
         } catch (error) {
@@ -91,14 +121,17 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
         }
 
         try {
-            if (participantIds.includes(payerId)) {
-                alert("El pagador no puede ser participante (ya pagó todo)");
-                return;
-            }
-
             const total = parseFloat(amount);
             const count = parseInt(installments);
-            const perPersonAmount = total / (participantIds.length * count);
+
+            // Calculate how many people split the cost
+            // If payer is in participants, total people = participantIds.length
+            // If payer is NOT in participants, total people = participantIds.length + 1 (payer pays their share + gets reimbursed)
+            // Actually, for correct 50/50: if there are 2 people total, each pays half
+            // participantIds should include ONLY the debtors (people who owe), not the payer
+            // So if it's 50/50: participantIds = [debtor], total people = 2 (payer + debtor)
+            const totalPeople = participantIds.length + 1; // +1 for the payer
+            const perPersonAmount = total / (totalPeople * count);
 
             const payload = {
                 description,
@@ -109,17 +142,22 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
                 startMonth
             };
 
-            await api.createInstallmentPlan(partyId, payload);
-            await loadItems(); // Refresh items
+            if (editingId) {
+                await api.updateInstallmentPlan(partyId, editingId, payload);
+            } else {
+                await api.createInstallmentPlan(partyId, payload);
+            }
 
-            // Reset form
+            // Reset Form and State
             setDescription('');
             setAmount('');
-            setInstallments('1');
+            setInstallments('12');
             setParticipantIds([]);
-        } catch (error) {
-            console.error("Error creating plan:", error);
-            alert("Error al guardar el plan");
+            setEditingId(null);
+            loadItems();
+        } catch (e) {
+            console.error('Error saving installment plan:', e);
+            alert("Error al guardar el plan de cuotas");
         } finally {
             setSubmitting(false);
         }
@@ -205,11 +243,6 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
 
     }, [items, currentUser.id, currentMonth]);
 
-    const getMemberName = (id: string) => {
-        const m = members.find(m => m.id === id || m.memberId === id);
-        return m ? (m.nickname || m.username || m.firstName || m.email) : 'Usuario (Eliminado)';
-    };
-
     const totalItemsAmount = items.reduce((sum, item) => sum + item.totalAmount, 0);
 
     if (loading && items.length === 0) {
@@ -220,13 +253,31 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
     }
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500 pb-20">
+        <div id="installment-simulator-form" className="space-y-6 animate-in fade-in duration-500 pb-20">
             <Card className={`${themeColors.card} ${themeColors.border} border`}>
-                <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-                    <Calendar className={`w-5 h-5 ${themeColors.amountText}`} />
-                    Simulador de Plan de Cuotas
-                    <InfoTooltip content="Registra compras en cuotas para calcular automáticamente cuánto debe transferir cada mes quien no pagó." position="right" useIcon />
-                </h3>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold flex items-center gap-2">
+                        <Calendar className={`w-5 h-5 ${themeColors.amountText}`} />
+                        {editingId ? 'Editando Plan de Cuotas' : 'Simulador de Plan de Cuotas'}
+                        <InfoTooltip content="Registra compras en cuotas para calcular automáticamente cuánto debe transferir cada mes quien no pagó." position="right" useIcon />
+                    </h3>
+                    {editingId && (
+                        <button
+                            onClick={() => {
+                                setEditingId(null);
+                                setDescription('');
+                                setAmount('');
+                                setInstallments('1'); // Reset to default
+                                setPayerId(currentUser.id); // Reset to current user
+                                setParticipantIds([]);
+                                setStartMonth(new Date().toISOString().slice(0, 7)); // Reset to current month
+                            }}
+                            className="text-xs text-red-400 hover:text-red-300 font-medium px-2 py-1 bg-red-500/10 rounded-lg transition-colors"
+                        >
+                            Cancelar Edición
+                        </button>
+                    )}
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                     <input
@@ -317,9 +368,9 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
                     </div>
                 </div>
 
-                <Button onClick={handleAddItem} disabled={submitting} className={`${themeColors.primaryButton} w-full flex items-center justify-center gap-2`}>
-                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                    Agregar al Plan
+                <Button onClick={handleAddItem} disabled={submitting} className={`${editingId ? 'bg-blue-600 hover:bg-blue-700' : themeColors.primaryButton} w-full flex items-center justify-center gap-2`}>
+                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />)}
+                    {editingId ? 'Guardar Cambios' : 'Agregar al Plan'}
                 </Button>
             </Card>
 
@@ -427,13 +478,43 @@ export const InstallmentSimulator: React.FC<{ members: any[], currentUser: any, 
                                         <span>Debe: <span className="text-indigo-400">{getMemberName(item.debtorId)}</span></span>
                                     </div>
                                 </div>
-                                <button
-                                    onClick={() => handleDelete(item.id)}
-                                    className="text-slate-500 hover:text-red-400 p-2 hover:bg-red-500/10 rounded-lg transition-colors"
-                                    title="Eliminar Plan Completo"
-                                >
-                                    <Trash2 className="w-5 h-5" />
-                                </button>
+                                <div className="flex gap-2">
+                                    {(item.createdBy === currentUser.id || item.payerId === currentUser.id) && (
+                                        <button
+                                            onClick={() => {
+                                                // Populate form with existing data
+                                                setDescription(item.description);
+                                                setAmount(item.totalAmount.toString());
+                                                setInstallments(item.installments.toString());
+                                                setPayerId(item.payerId);
+                                                setStartMonth(item.startDate);
+                                                // Get participants from item
+                                                const participants = item.participants || [item.debtorId];
+                                                setParticipantIds(participants);
+                                                setEditingId(item.id);
+
+                                                // Scroll to form (to the beginning of the component)
+                                                const element = document.getElementById('installment-simulator-form');
+                                                if (element) {
+                                                    element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                                } else {
+                                                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                                                }
+                                            }}
+                                            className="text-slate-500 hover:text-blue-400 p-2 hover:bg-blue-500/10 rounded-lg transition-colors"
+                                            title="Editar Plan"
+                                        >
+                                            <Pencil className="w-5 h-5" />
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => handleDelete(item.id)}
+                                        className="text-slate-500 hover:text-red-400 p-2 hover:bg-red-500/10 rounded-lg transition-colors"
+                                        title="Eliminar Plan Completo"
+                                    >
+                                        <Trash2 className="w-5 h-5" />
+                                    </button>
+                                </div>
                             </div>
                         ))}
                     </div>

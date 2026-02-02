@@ -469,6 +469,15 @@ export const api = {
     return handleResponse(res);
   },
 
+  async updateInstallmentPlan(partyId: string, id: string, data: any) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/installments/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
   async deleteInstallmentPlan(partyId: string, id: string) {
     const res = await fetch(`${API_URL}/parties/${partyId}/installments/${id}`, {
       method: 'DELETE',
