@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { getThemeColors } from '../utils/theme';
 import {
   AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Sector
+  PieChart, Pie, Sector, Legend, LabelList
 } from 'recharts';
 import { Card } from '../components/Card';
 import { Tooltip as InfoTooltip } from '../components/Tooltip';
@@ -19,6 +19,9 @@ interface DashboardViewProps {
   formatMoney: (amount: number) => string;
   currentBudgetEntries: BudgetEntry[];
   categoryBudgets: Record<CategoryType, number>;
+  // Nav callback para que las filas de vencimientos sean clickeables y lleven al item
+  // dentro de Movimientos.
+  navigate?: (tab: any, params?: any) => void;
 }
 
 const renderActiveShape = (props: any) => {
@@ -77,6 +80,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   formatMoney,
   currentBudgetEntries,
   categoryBudgets,
+  navigate,
 }) => {
   const theme = localStorage.getItem('colorTheme') || 'new';
   const themeColors = getThemeColors();
@@ -140,28 +144,101 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' });
   };
 
+  // Resumen del mes: net = ingresos - gastos del mes actual.
+  // Comparamos contra mes anterior para mostrar si vamos mejor o peor.
+  // El sparkline usa los últimos 6 meses (trendData ya filtrado para excluir meses sin data).
+  const monthlySummary = useMemo(() => {
+    const current = trendData.length > 0 ? trendData[trendData.length - 1] : null;
+    const previous = trendData.length > 1 ? trendData[trendData.length - 2] : null;
+    const currentNet = current ? (current.Ingresos || 0) - (current.Gastos || 0) : netFlow;
+    const previousNet = previous ? (previous.Ingresos || 0) - (previous.Gastos || 0) : null;
+    const sparkline = trendData.map(d => ({
+      name: d.name,
+      net: (d.Ingresos || 0) - (d.Gastos || 0),
+    }));
+    return { currentNet, previousNet, sparkline };
+  }, [trendData, netFlow]);
+
+  // Datos para los stat cards del bottom row, con barra de presupuesto cuando esté definido.
+  // Quitamos cards redundantes: Saldo Proyectado (ya en sidebar), Ingresos Totales (ya en
+  // header), Gastos Fijos (ya en widget "Más gasto" del top row).
+  const bottomStats = useMemo(() => {
+    return [
+      { cat: CategoryType.VARIABLE_EXPENSE, label: 'Gastos Variables', icon: 'fa-shopping-bag', color: 'text-amber-400', bg: 'from-amber-500/10 to-transparent' },
+      { cat: CategoryType.SHARED_EXPENSE, label: 'Gastos Compartidos', icon: 'fa-users', color: 'text-teal-400', bg: 'from-teal-500/10 to-transparent' },
+      { cat: CategoryType.DEBT, label: 'Deudas', icon: 'fa-receipt', color: 'text-rose-400', bg: 'from-rose-500/10 to-transparent' },
+      { cat: CategoryType.SAVINGS, label: 'Ahorro Real', icon: 'fa-piggy-bank', color: 'text-emerald-400', bg: 'from-emerald-500/10 to-transparent' },
+    ].map(s => {
+      const total = (currentTotals[s.cat] || 0) + (s.cat === CategoryType.SAVINGS ? totalGoalsSaved : 0);
+      const budget = categoryBudgets?.[s.cat] || 0;
+      const pct = budget > 0 ? Math.round((total / budget) * 100) : null;
+      return { ...s, total, budget, pct };
+    });
+  }, [currentTotals, categoryBudgets, totalGoalsSaved]);
+
+  // Click en un vencimiento → abre el item en Movimientos.
+  const goToEntry = (entry: BudgetEntry) => {
+    if (!navigate) return;
+    navigate('presupuesto', { entryId: entry.id, month: entry.month_year || entry.date?.substring(0, 7) });
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
       {/* 0. Header Strip + 2 widgets accionables (3 columnas en desktop, apilados en mobile) */}
 
-      {/* Saludo compacto (1 columna en desktop) */}
-      <div className={`bg-gradient-to-br ${theme === 'new' ? 'from-teal-900/40 to-emerald-900/40' : 'from-blue-900/40 to-indigo-900/40'} border border-white/5 rounded-3xl p-5 relative overflow-hidden group flex items-center gap-4`}>
-        <div className={`absolute inset-0 ${theme === 'new' ? 'bg-teal-500/5' : 'bg-blue-500/5'} blur-3xl`}></div>
-        <div className={`relative z-10 w-14 h-14 rounded-full bg-gradient-to-br ${themeColors.logoGradient} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}>
-          {user.avatar ? (
-            <img src={user.avatar} className="w-full h-full rounded-full object-cover" alt="User" />
-          ) : (
-            <span className="font-black">{user.firstName ? user.firstName[0] : user.username[0].toUpperCase()}</span>
+      {/* Widget 0: Resumen del mes — net = Ingresos - Gastos con comparación vs mes anterior. */}
+      <Card variant="glass" className="!p-5 relative overflow-hidden">
+        <div className={`absolute inset-0 ${monthlySummary.currentNet >= 0 ? 'bg-emerald-500/5' : 'bg-rose-500/5'} blur-3xl`}></div>
+        <div className="relative z-10">
+          <div className="flex items-center gap-2 mb-3">
+            <div className={`w-9 h-9 rounded-xl ${monthlySummary.currentNet >= 0 ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/15 text-rose-400 border-rose-500/20'} border flex items-center justify-center`}>
+              <i className={`fas ${monthlySummary.currentNet >= 0 ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'} text-sm`}></i>
+            </div>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{greeting}, {user.firstName || user.username}</span>
+          </div>
+          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Balance del mes</p>
+          <p className={`text-3xl font-black tracking-tight ${monthlySummary.currentNet >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {monthlySummary.currentNet >= 0 ? '+' : ''}{formatMoney(monthlySummary.currentNet)}
+          </p>
+          {monthlySummary.previousNet !== null && Math.abs(monthlySummary.previousNet) > 1 && (() => {
+            const diff = monthlySummary.currentNet - monthlySummary.previousNet;
+            const pctChange = monthlySummary.previousNet !== 0 ? Math.round((diff / Math.abs(monthlySummary.previousNet)) * 100) : null;
+            const arrowUp = diff > 0;
+            return (
+              <p className="text-[10px] font-bold text-slate-500 mt-1">
+                <i className={`fas ${arrowUp ? 'fa-caret-up text-emerald-400' : 'fa-caret-down text-rose-400'} mr-1`}></i>
+                {arrowUp ? '+' : ''}{formatMoney(diff)}
+                {pctChange !== null && <span className="ml-1">({arrowUp ? '+' : ''}{pctChange}%)</span>}
+                <span className="ml-1 text-slate-600">vs mes anterior</span>
+              </p>
+            );
+          })()}
+          {monthlySummary.sparkline.length >= 2 && (
+            <div className="h-12 mt-3 -mx-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={monthlySummary.sparkline}>
+                  <defs>
+                    <linearGradient id="sparkNetPos" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#34d399" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="net"
+                    stroke={monthlySummary.currentNet >= 0 ? '#34d399' : '#f43f5e'}
+                    strokeWidth={2}
+                    fill="url(#sparkNetPos)"
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </div>
-        <div className="relative z-10 min-w-0">
-          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{greeting}</p>
-          <h2 className={`text-xl font-black text-white tracking-tight truncate`}>
-            {user.firstName || user.username}
-          </h2>
-        </div>
-      </div>
+      </Card>
 
       {/* Widget 1: Próximos vencimientos */}
       <Card variant="glass" className="!p-5">
@@ -177,18 +254,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="text-[11px] text-slate-500 font-bold">Nada pendiente esta semana</p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {upcomingDue.map(e => {
               const cfg = categoryConfig[e.category as CategoryType];
+              // Algunos items tienen el monto embebido en el nombre (ej "$491.690,53 (Menos…)").
+              // Mostrarlo igual pero con `title` para que el tooltip nativo muestre el nombre
+              // completo en hover, y reservar más espacio al monto/fecha.
               return (
-                <div key={e.id} className="flex items-center gap-2 text-[12px]">
-                  <i className={`fas ${cfg?.icon || 'fa-circle'} ${cfg?.color || 'text-slate-400'} text-[10px] w-4 text-center`}></i>
-                  <span className="font-bold text-white truncate flex-1">{e.name}</span>
-                  <span className="font-mono text-slate-300 whitespace-nowrap">{formatMoney(e.amount)}</span>
+                <button
+                  type="button"
+                  key={e.id}
+                  onClick={() => goToEntry(e)}
+                  disabled={!navigate}
+                  title={`${e.name}${navigate ? ' — click para ir al movimiento' : ''}`}
+                  className={`w-full flex items-center gap-2 text-[12px] py-1.5 px-2 -mx-2 rounded-lg transition-colors text-left ${navigate ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'}`}
+                >
+                  <i className={`fas ${cfg?.icon || 'fa-circle'} ${cfg?.color || 'text-slate-400'} text-[10px] w-4 text-center shrink-0`}></i>
+                  <span className="font-bold text-white truncate flex-1 min-w-0">{e.name}</span>
+                  <span className="font-mono text-slate-300 whitespace-nowrap text-[11px]">{formatMoney(e.amount)}</span>
                   <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider whitespace-nowrap">
                     {formatRelativeDate(e.date)}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -235,10 +322,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </Card>
 
       {/* 1. Flujo Financiero (Evolución Mensual) */}
-      <Card className="lg:col-span-3" title="Flujo Financiero" subtitle="Evolución de Ingresos vs gastos proyectados." variant="glass">
-        <div className="h-[350px] mt-6">
+      <Card
+        className="lg:col-span-3"
+        title="Flujo Financiero"
+        subtitle="Evolución de ingresos vs gastos proyectados."
+        variant="glass"
+        headerActions={
+          <div className="hidden sm:flex items-center gap-4 text-[10px] font-black uppercase tracking-widest">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-1 rounded-full" style={{ backgroundColor: primaryHex }}></span>
+              <span className="text-slate-300">Ingresos</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-1 rounded-full bg-rose-500"></span>
+              <span className="text-slate-300">Gastos</span>
+            </div>
+          </div>
+        }
+      >
+        <div className="h-[350px] mt-4">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={trendData}>
+            <AreaChart data={trendData} margin={{ top: 30, right: 20, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="colorIngresos" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor={primaryHex} stopOpacity={0.3} />
@@ -266,7 +370,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 content={({ active, payload, label }) => {
                   if (active && payload && payload.length) {
                     return (
-                      <div className="bg-slate-900/90 border border-slate-700/50 p-3 rounded-xl shadow-xl backdrop-blur-md">
+                      <div className="bg-slate-900/95 border border-slate-700/50 p-3 rounded-xl shadow-xl backdrop-blur-md">
                         <p className="text-slate-400 text-xs mb-1 font-medium uppercase tracking-wider">{label}</p>
                         {payload.map((p: any, idx: number) => (
                           <div key={idx} className="flex items-center gap-2 mb-1">
@@ -290,7 +394,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 strokeWidth={3}
                 fillOpacity={1}
                 fill="url(#colorIngresos)"
-              />
+              >
+                <LabelList
+                  dataKey="Ingresos"
+                  position="top"
+                  formatter={(v: any) => {
+                    const n = Number(v);
+                    if (!Number.isFinite(n) || n === 0) return '';
+                    if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
+                    return `$${(n / 1000).toFixed(0)}k`;
+                  }}
+                  style={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                />
+              </Area>
               <Area
                 type="monotone"
                 dataKey="Gastos"
@@ -305,70 +421,56 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </Card>
 
-      {/* 2. Stats Rápidos */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 lg:col-span-3">
-        {/* New Balance Card (Actual vs Projected) */}
-        <Card className={`group hover:-translate-y-1 transition-transform duration-300 relative !overflow-visible shine-hover col-span-1 md:col-span-2 lg:col-span-1 ${theme === 'new' ? 'border-teal-500/30' : 'border-blue-500/30'}`} variant="glass">
-          <div className={`absolute inset-0 bg-gradient-to-br ${theme === 'new' ? 'from-teal-600/20 to-emerald-500/10' : 'from-blue-600/20 to-cyan-500/10'} opacity-50 rounded-2xl`}></div>
-          <div className="relative z-10 flex flex-col justify-center h-full">
-            <div className="flex items-center gap-3 mb-2">
-              <div className={`w-10 h-10 rounded-xl ${theme === 'new' ? 'bg-teal-500/20 text-teal-400' : 'bg-blue-500/20 text-blue-400'} flex items-center justify-center`}>
-                <i className="fas fa-chart-line text-lg"></i>
-              </div>
-              <span className={`text-[10px] font-black ${theme === 'new' ? 'text-teal-300' : 'text-blue-300'} uppercase tracking-widest`}>Saldo Proyectado</span>
-              <InfoTooltip content="Esta es la proyección de tu saldo final considerando gastos e ingresos marcados como 'Provisorios'." position="top" useIcon />
-            </div>
-
-            <div className="flex items-end gap-2">
-              <span className={`text-3xl font-black ${projectedNetFlow >= 0 ? 'text-white' : 'text-rose-400'}`}>
-                {formatMoney(projectedNetFlow)}
-              </span>
-              {Math.abs(projectedNetFlow - netFlow) > 1 && (
-                <span className="text-sm font-bold text-slate-400 mb-1.5 ml-1">
-                  (Actual: {formatMoney(netFlow)})
-                </span>
-              )}
-            </div>
-            <div className="mt-2 w-full bg-slate-800/50 h-1.5 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full ${projectedNetFlow >= 0 ? (theme === 'new' ? 'bg-teal-500' : 'bg-blue-500') : 'bg-rose-500'}`}
-                style={{ width: '100%' }} // Simple bar for now
-              ></div>
-            </div>
-          </div>
-        </Card>
-
-        {[
-          { label: 'Ingresos Totales', val: currentTotals[CategoryType.INCOME] || 0, icon: 'fa-wallet', color: 'text-emerald-400', bg: 'from-emerald-500/10 to-transparent' },
-          { label: 'Gastos Fijos', val: currentTotals[CategoryType.FIXED_EXPENSE] || 0, icon: 'fa-lock', color: 'text-indigo-400', bg: 'from-indigo-500/10 to-transparent' },
-          { label: 'Gastos Variables', val: currentTotals[CategoryType.VARIABLE_EXPENSE] || 0, icon: 'fa-shopping-bag', color: 'text-amber-400', bg: 'from-amber-500/10 to-transparent' },
-          { label: 'Gastos Compartidos', val: currentTotals[CategoryType.SHARED_EXPENSE] || 0, icon: 'fa-users', color: 'text-teal-400', bg: 'from-teal-500/10 to-transparent' },
-          {
-            label: 'Ahorro Real',
-            val: (currentTotals[CategoryType.SAVINGS] || 0) + totalGoalsSaved,
-            icon: 'fa-piggy-bank',
-            color: theme === 'new' ? 'text-teal-400' : 'text-blue-400',
-            bg: theme === 'new' ? 'from-teal-500/10 to-transparent' : 'from-blue-500/10 to-transparent',
-            customValue: `${formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} / ${formatMoney(totalGoalsSaved)}`,
-            tooltip: "Suma de depósitos directos a Ahorro + Aportes a Metas."
-          }
-        ].map((stat, i) => (
-          <Card key={i} className={`group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden shine-hover`} variant="glass">
-            <div className={`absolute inset-0 bg-gradient-to-br ${stat.bg} opacity-50`}></div>
-            <div className="relative z-10 flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform duration-500">
-                <i className={`fas ${stat.icon} text-2xl ${stat.color} drop-shadow-md`}></i>
-              </div>
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</span>
-                  {'tooltip' in stat && <InfoTooltip content={stat.tooltip as string} position="top" useIcon />}
+      {/* 2. Stats por categoría — sin duplicados con sidebar/header. Cada card tiene barra
+              de progreso vs presupuesto (verde <80%, ámbar 80-100%, rojo >100%) cuando hay
+              presupuesto definido en Configuración. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 lg:col-span-3">
+        {bottomStats.map((s, i) => {
+          const showSavings = s.cat === CategoryType.SAVINGS && totalGoalsSaved > 0;
+          return (
+            <Card key={i} className="group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden shine-hover" variant="glass">
+              <div className={`absolute inset-0 bg-gradient-to-br ${s.bg} opacity-50`}></div>
+              <div className="relative z-10">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform duration-500">
+                    <i className={`fas ${s.icon} text-xl ${s.color} drop-shadow-md`}></i>
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">{s.label}</span>
+                    {showSavings && <InfoTooltip content="Suma de depósitos directos a Ahorro + Aportes a Metas." position="top" useIcon />}
+                  </div>
                 </div>
-                <p className={`text-2xl font-black text-white tracking-tight`}>{'customValue' in stat ? stat.customValue : formatMoney(stat.val)}</p>
+                <p className="text-2xl font-black text-white tracking-tight">{formatMoney(s.total)}</p>
+                {showSavings && (
+                  <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+                    Ahorro directo: {formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} · Metas: {formatMoney(totalGoalsSaved)}
+                  </p>
+                )}
+                {/* Barra de progreso vs presupuesto */}
+                <div className="mt-3">
+                  {s.pct !== null ? (
+                    <>
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Presupuesto</span>
+                        <span className={`text-[10px] font-black ${s.pct > 100 ? 'text-rose-400' : s.pct > 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {s.pct}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-800/60 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${s.pct > 100 ? 'bg-rose-500' : s.pct > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                          style={{ width: `${Math.min(s.pct, 100)}%` }}
+                        ></div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-[9px] text-slate-600 italic">Sin presupuesto definido</p>
+                  )}
+                </div>
               </div>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
       </div>
 
       {/* 3. Bottom Grid: Donut Chart Full Width */}

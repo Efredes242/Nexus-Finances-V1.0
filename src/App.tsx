@@ -1505,6 +1505,7 @@ const App: React.FC = () => {
           formatMoney={formatMoney}
           currentBudgetEntries={currentBudgetEntries}
           categoryBudgets={state.categoryBudgets}
+          navigate={navigate}
         />
       )}
 
