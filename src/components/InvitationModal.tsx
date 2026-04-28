@@ -10,7 +10,7 @@ export const InvitationModal = () => {
     const checkInvitations = async () => {
         try {
             const res = await api.getInvitations();
-            setInvitations(res);
+            setInvitations((res as any[]) || []);
         } catch (e) {
             console.error("Error checking invitations", e);
         }

@@ -54,6 +54,40 @@ export const EntryModal: React.FC<EntryModalProps> = ({
   const [cardType, setCardType] = useState(PREDEFINED_CARDS[0]);
   const [cardEntity, setCardEntity] = useState('');
 
+  // Parser de inputs numéricos: distingue entre "vacío" (undefined → no se persiste basura),
+  // "número válido" (lo guardamos), y "texto inválido" (devolvemos null para que el caller
+  // pueda decidir; nunca silenciamos a 0 — eso sería pérdida de datos en una app financiera).
+  const parseAmountInput = (raw: string): number | undefined | null => {
+    if (raw === '' || raw == null) return undefined;
+    const trimmed = raw.trim().replace(',', '.');
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) return null;
+    if (n < 0) return null;
+    return n;
+  };
+
+  // Set de nombres de campos numéricos que tienen error de validación actualmente.
+  // Cuando el usuario escribe algo no parseable, se marca el field como error y NO actualizamos
+  // el valor — preservamos el último valor válido que había.
+  const [numericErrors, setNumericErrors] = useState<Set<string>>(new Set());
+
+  const handleNumericChange = (field: 'originalAmount' | 'amount' | 'exchangeRateEstimated' | 'exchangeRateActual', raw: string) => {
+    const result = parseAmountInput(raw);
+    if (result === null) {
+      // Texto inválido: marcar error visual, NO actualizar el valor
+      setNumericErrors(prev => new Set(prev).add(field));
+      return;
+    }
+    // Limpio el error si hay
+    setNumericErrors(prev => {
+      if (!prev.has(field)) return prev;
+      const next = new Set(prev);
+      next.delete(field);
+      return next;
+    });
+    setLocalEntry(prev => ({ ...prev, [field]: result }));
+  };
+
   // Auto-calculate ARS amount when foreign values change
   useEffect(() => {
     if (localEntry.currency && localEntry.currency !== 'ARS') {
@@ -168,6 +202,13 @@ export const EntryModal: React.FC<EntryModalProps> = ({
   }, [allEntries, localEntry.id, localEntry.linkedIncomeId, localEntry.date]);
 
   const handleSave = () => {
+    // Bloquear guardado si hay errores de input numérico pendientes — evitamos persistir
+    // datos parciales o un valor "viejo" que el usuario creía haber actualizado.
+    if (numericErrors.size > 0) {
+      alert('Hay campos con valores inválidos. Corregilos antes de guardar.');
+      return;
+    }
+
     let finalTag = localEntry.tag;
 
     if (isAddingTag) {
@@ -236,10 +277,15 @@ export const EntryModal: React.FC<EntryModalProps> = ({
                       <input
                         autoFocus
                         type="number"
-                        className="w-full bg-slate-900 rounded-xl p-3 border border-white/5 focus:border-blue-500 outline-none font-black text-green-400 text-lg"
-                        value={localEntry.originalAmount || ''}
-                        onChange={e => setLocalEntry({ ...localEntry, originalAmount: parseFloat(e.target.value) || 0 })}
+                        step="any"
+                        min="0"
+                        className={`w-full bg-slate-900 rounded-xl p-3 border outline-none font-black text-green-400 text-lg ${numericErrors.has('originalAmount') ? 'border-rose-500/70 focus:border-rose-500' : 'border-white/5 focus:border-blue-500'}`}
+                        defaultValue={localEntry.originalAmount ?? ''}
+                        onChange={e => handleNumericChange('originalAmount', e.target.value)}
                       />
+                      {numericErrors.has('originalAmount') && (
+                        <p className="text-[10px] text-rose-400 font-bold mt-0.5">Monto inválido — usá un número positivo.</p>
+                      )}
                     </div>
                   ) : (
                     <div className="flex-1 space-y-1">
@@ -247,10 +293,15 @@ export const EntryModal: React.FC<EntryModalProps> = ({
                       <input
                         autoFocus
                         type="number"
-                        className="w-full bg-slate-900 rounded-xl p-3 border border-white/5 focus:border-blue-500 outline-none font-black text-blue-400 text-lg"
-                        value={localEntry.amount || ''}
-                        onChange={e => setLocalEntry({ ...localEntry, amount: parseFloat(e.target.value) || 0 })}
+                        step="any"
+                        min="0"
+                        className={`w-full bg-slate-900 rounded-xl p-3 border outline-none font-black text-blue-400 text-lg ${numericErrors.has('amount') ? 'border-rose-500/70 focus:border-rose-500' : 'border-white/5 focus:border-blue-500'}`}
+                        defaultValue={localEntry.amount ?? ''}
+                        onChange={e => handleNumericChange('amount', e.target.value)}
                       />
+                      {numericErrors.has('amount') && (
+                        <p className="text-[10px] text-rose-400 font-bold mt-0.5">Monto inválido — usá un número positivo.</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -261,21 +312,31 @@ export const EntryModal: React.FC<EntryModalProps> = ({
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Cotiz. Estimada</label>
                       <input
                         type="number"
-                        className="w-full bg-slate-900 rounded-xl p-3 border border-white/5 focus:border-blue-500 outline-none text-sm font-bold text-slate-300"
+                        step="any"
+                        min="0"
+                        className={`w-full bg-slate-900 rounded-xl p-3 border outline-none text-sm font-bold text-slate-300 ${numericErrors.has('exchangeRateEstimated') ? 'border-rose-500/70 focus:border-rose-500' : 'border-white/5 focus:border-blue-500'}`}
                         placeholder="0.00"
-                        value={localEntry.exchangeRateEstimated || ''}
-                        onChange={e => setLocalEntry({ ...localEntry, exchangeRateEstimated: parseFloat(e.target.value) || 0 })}
+                        defaultValue={localEntry.exchangeRateEstimated ?? ''}
+                        onChange={e => handleNumericChange('exchangeRateEstimated', e.target.value)}
                       />
+                      {numericErrors.has('exchangeRateEstimated') && (
+                        <p className="text-[10px] text-rose-400 font-bold mt-0.5">Cotización inválida.</p>
+                      )}
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Cotiz. Real (Compra)</label>
                       <input
                         type="number"
-                        className="w-full bg-slate-900 rounded-xl p-3 border border-white/5 focus:border-blue-500 outline-none text-sm font-bold text-white"
+                        step="any"
+                        min="0"
+                        className={`w-full bg-slate-900 rounded-xl p-3 border outline-none text-sm font-bold text-white ${numericErrors.has('exchangeRateActual') ? 'border-rose-500/70 focus:border-rose-500' : 'border-white/5 focus:border-blue-500'}`}
                         placeholder="0.00"
-                        value={localEntry.exchangeRateActual || ''}
-                        onChange={e => setLocalEntry({ ...localEntry, exchangeRateActual: parseFloat(e.target.value) || 0 })}
+                        defaultValue={localEntry.exchangeRateActual ?? ''}
+                        onChange={e => handleNumericChange('exchangeRateActual', e.target.value)}
                       />
+                      {numericErrors.has('exchangeRateActual') && (
+                        <p className="text-[10px] text-rose-400 font-bold mt-0.5">Cotización inválida.</p>
+                      )}
                     </div>
                     <div className="col-span-1 sm:col-span-2 space-y-1 pt-2 border-t border-white/5">
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Calculado (ARS)</label>

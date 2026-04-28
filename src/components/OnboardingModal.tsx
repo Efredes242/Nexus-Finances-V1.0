@@ -28,7 +28,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ user, onComple
         setError('');
 
         try {
-            const response = await api.updateProfile(formData);
+            const response = await api.updateProfile(formData) as any;
             // The response.user contains the updated user object
             onComplete(response.user);
         } catch (err: any) {
