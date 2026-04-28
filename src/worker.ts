@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { sign, verify } from 'hono/jwt';
+import { logger } from 'hono/logger';
 import bcrypt from 'bcryptjs';
 
 type Bindings = {
@@ -16,6 +17,7 @@ type Variables = {
 const app = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 // Middleware
+app.use('*', logger());
 app.use('*', cors({
     origin: (origin) => {
         if (origin.endsWith('pages.dev') || origin.endsWith('ezequielfredes.com.ar') || origin.includes('localhost')) {
@@ -47,11 +49,27 @@ const authMiddleware = async (c: any, next: any) => {
     }
 };
 
+// Admin Middleware - Only allows admin email
+const adminMiddleware = async (c: any, next: any) => {
+    const user = c.get('user');
+    const ADMIN_EMAIL = 'ezequiel.fredes.mondragon@gmail.com';
+
+    // Check if user email matches admin email
+    if (user.email !== ADMIN_EMAIL) {
+        console.log(`[ADMIN] Access denied for ${user.email}`);
+        return c.json({ error: 'Forbidden: Admin access required' }, 403);
+    }
+
+    console.log(`[ADMIN] Access granted for ${user.email}`);
+    await next();
+};
+
 // --- AUTH ROUTES ---
 
 // Google Auth
 app.post('/api/auth/google', async (c) => {
     const { credential, accessToken } = await c.req.json();
+    console.log('[POST /api/auth/google] Start', { hasCredential: !!credential, hasAccessToken: !!accessToken });
     if (!credential && !accessToken) return c.json({ error: 'Credential or Access Token required' }, 400);
 
     try {
@@ -94,11 +112,17 @@ app.post('/api/auth/google', async (c) => {
             let firstName = given_name || (name ? name.split(' ')[0] : null);
             let lastName = family_name || (name ? name.split(' ').slice(1).join(' ') : null);
 
-            await c.env.DB.prepare('INSERT INTO users (id, username, password, email, google_id, role, avatar, must_change_password, firstName, lastName) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)')
-                .bind(id, username, dummyPassword, email, sub, 'user', picture, firstName, lastName)
+            // Auto-approve Super Admin
+            const ADMIN_EMAIL = 'ezequiel.fredes.mondragon@gmail.com';
+            const isSuperAdmin = email === ADMIN_EMAIL;
+            const initialRole = isSuperAdmin ? 'admin' : 'user';
+            const initialStatus = isSuperAdmin ? 'APPROVED' : 'PENDING';
+
+            await c.env.DB.prepare('INSERT INTO users (id, username, password, email, google_id, role, avatar, must_change_password, firstName, lastName, approval_status) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)')
+                .bind(id, username, dummyPassword, email, sub, initialRole, picture, firstName, lastName, initialStatus)
                 .run();
 
-            user = { id, username, email, role: 'user', must_change_password: 0, avatar: picture, firstName, lastName, birthDate: null };
+            user = { id, username, email, role: initialRole, must_change_password: 0, avatar: picture, firstName, lastName, birthDate: null, approval_status: initialStatus };
         } else {
             // @ts-ignore
             if (!user.google_id || !user.avatar) {
@@ -109,9 +133,41 @@ app.post('/api/auth/google', async (c) => {
             }
         }
 
+        // CHECK APPROVAL STATUS before issuing token
+        // @ts-ignore
+        const approvalStatus = user.approval_status || 'APPROVED'; // Default to APPROVED for existing users
+
+        if (approvalStatus === 'PENDING') {
+            console.log(`[AUTH] User ${email} is pending approval`);
+            return c.json({
+                approval_status: 'PENDING',
+                message: 'Tu solicitud fue enviada al Administrador. Por favor espera 24hs para una devolución por parte del administrador.',
+                email: email
+            }, 403);
+        }
+
+        if (approvalStatus === 'REJECTED') {
+            console.log(`[AUTH] User ${email} was rejected`);
+            return c.json({
+                approval_status: 'REJECTED',
+                message: 'Tu solicitud de acceso ha sido denegada. Por favor contacta a soporte para más información.',
+                email: email
+            }, 403);
+        }
+
+        // Update last_login_at
+        await c.env.DB.prepare('UPDATE users SET last_login_at = ? WHERE id = ?')
+            .bind(new Date().toISOString(), user.id).run();
+
         const token = await sign({
             // @ts-ignore
-            id: user.id, username: user.username, role: user.role
+            id: user.id,
+            // @ts-ignore
+            username: user.username,
+            // @ts-ignore
+            role: user.role,
+            // @ts-ignore
+            email: user.email
         }, getJwtSecret(c));
 
         return c.json({
@@ -121,6 +177,8 @@ app.post('/api/auth/google', async (c) => {
                 id: user.id,
                 // @ts-ignore
                 username: user.username,
+                // @ts-ignore
+                email: user.email,
                 // @ts-ignore
                 role: user.role,
                 // @ts-ignore
@@ -145,6 +203,7 @@ app.post('/api/auth/google', async (c) => {
 // Login
 app.post('/api/login', async (c) => {
     const { username, password } = await c.req.json();
+    console.log('[POST /api/login] Attempt for username:', username);
 
     try {
         const user = await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
@@ -241,6 +300,18 @@ app.get('/api/has-users', async (c) => {
     return c.json({ hasUsers: (result?.count || 0) > 0 });
 });
 
+// Get All Users (for naming/parsing)
+app.get('/api/users', authMiddleware, async (c) => {
+    const users = await c.env.DB.prepare('SELECT id, username, role, firstName, lastName, avatar FROM users').all();
+    return c.json(users.results);
+});
+
+// Get Public Users (Authenticated, for shared expenses naming)
+app.get('/api/users/public', authMiddleware, async (c) => {
+    const users = await c.env.DB.prepare('SELECT id, username, firstName, lastName, avatar FROM users').all();
+    return c.json(users.results);
+});
+
 // --- DATA ROUTES ---
 
 // Get User Profile
@@ -278,16 +349,13 @@ app.put('/api/users/profile', authMiddleware, async (c) => {
 // Entries
 app.get('/api/data', authMiddleware, async (c) => {
     const user = c.get('user');
-    const year = c.req.query('year');
+    // Always filter by year to prevent full-table scans that exhaust Worker memory.
+    // If the frontend doesn't send a year, default to the current year.
+    const year = c.req.query('year') || new Date().getFullYear().toString();
 
-    let results;
-    if (year) {
-        results = await c.env.DB.prepare('SELECT * FROM entries WHERE user_id = ? AND month_year LIKE ?')
-            .bind(user.id, `${year}-%`)
-            .all();
-    } else {
-        results = await c.env.DB.prepare('SELECT * FROM entries WHERE user_id = ?').bind(user.id).all();
-    }
+    const results = await c.env.DB.prepare(
+        'SELECT *, linked_income_id AS linkedIncomeId FROM entries WHERE user_id = ? AND month_year LIKE ? ORDER BY month_year ASC'
+    ).bind(user.id, `${year}-%`).all();
 
     return c.json(results.results);
 });
@@ -302,21 +370,26 @@ app.post('/api/entries', authMiddleware, async (c) => {
     }
 
     const { id } = body;
+    if (!id) {
+        console.error('[POST /entries] Missing ID in body');
+        return c.json({ error: 'Entry ID is required' }, 400);
+    }
     console.log(`[POST /entries] Processing entry ${id} for user ${user.id}`);
+
 
     try {
         // Simplified upsert logic
         const exists = await c.env.DB.prepare('SELECT id FROM entries WHERE id = ? AND user_id = ?').bind(id, user.id).first();
 
-        // Sanitize inputs (ensure undefined becomes null)
-        const name = body.name || null;
+        // Sanitize and prepare data for SQL
+        const name = body.name || 'Sin nombre';
         const amount = body.amount ?? 0;
-        const category = body.category || null;
-        const tag = body.tag || null;
-        const date = body.date || null;
-        const paymentMethod = body.paymentMethod || null;
-        const status = body.status || null;
-        const month_year = body.month_year || null;
+        const category = body.category || 'Varios';
+        const tag = body.tag || 'General';
+        const date = body.date || new Date().toISOString().split('T')[0];
+        const paymentMethod = body.paymentMethod || 'Efectivo';
+        const status = body.status || 'PENDING';
+        const month_year = body.month_year || date.substring(0, 7);
         const cardName = body.cardName || null;
         const financingPlan = body.financingPlan || null;
         const originalAmount = body.originalAmount ?? amount;
@@ -324,30 +397,50 @@ app.post('/api/entries', authMiddleware, async (c) => {
         const exchangeRateEstimated = body.exchangeRateEstimated ?? 1;
         const exchangeRateActual = body.exchangeRateActual ?? 1;
         const is_provisional = body.is_provisional ? 1 : 0;
+        const linked_income_id = body.linkedIncomeId || null;
+        const application = body.application || null;
 
         if (exists) {
-            await c.env.DB.prepare(`
-       UPDATE entries 
-       SET name=?, amount=?, category=?, tag=?, date=?, paymentMethod=?, status=?, month_year=?, cardName=?, financingPlan=?, originalAmount=?, currency=?, exchangeRateEstimated=?, exchangeRateActual=?, is_provisional=?
-       WHERE id=? AND user_id=?
-     `).bind(
+            console.log(`[POST /entries] Updating existing entry ${id}`);
+            const updateSql = `
+                UPDATE entries 
+                SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, 
+                    cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, 
+                    exchangeRateActual = ?, is_provisional = ?, linked_income_id = ?, application = ?
+                WHERE id = ? AND user_id = ?
+            `;
+            const updateBindings = [
                 name, amount, category, tag, date, paymentMethod, status, month_year,
-                cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional,
-                id, user.id
-            ).run();
+                cardName, financingPlan, originalAmount, currency, exchangeRateEstimated,
+                exchangeRateActual, is_provisional, linked_income_id, application, id, user.id
+            ];
+            await c.env.DB.prepare(updateSql).bind(...updateBindings).run();
         } else {
-            await c.env.DB.prepare(`
-       INSERT INTO entries (id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
+            console.log(`[POST /entries] Inserting new entry ${id}`);
+            const insertSql = `
+                INSERT INTO entries (
+                    id, name, amount, category, tag, date, paymentMethod, status, month_year, 
+                    cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, 
+                    exchangeRateActual, is_provisional, linked_income_id, application
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `;
+            const insertBindings = [
                 id, name, amount, category, tag, date, paymentMethod, status, month_year,
-                cardName, financingPlan, user.id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional
-            ).run();
+                cardName, financingPlan, user.id, originalAmount, currency, exchangeRateEstimated,
+                exchangeRateActual, is_provisional, linked_income_id, application
+            ];
+            await c.env.DB.prepare(insertSql).bind(...insertBindings).run();
         }
+        console.error('[POST /entries] Success:', id);
         return c.json({ success: true });
     } catch (error: any) {
-        console.error('[POST /entries] DB Error:', error);
-        return c.json({ error: 'Database error', details: error.message }, 500);
+        console.error('[POST /entries] DB Error Full:', error);
+        console.error('[POST /entries] DB Error Message:', error.message);
+        return c.json({ 
+            error: `Error de BD: ${error.message}`, 
+            details: error.message, 
+            fullError: String(error) 
+        }, 500);
     }
 });
 
@@ -404,10 +497,28 @@ app.delete('/api/goals/:id', authMiddleware, async (c) => {
 // Config
 app.get('/api/config', authMiddleware, async (c) => {
     const user = c.get('user');
+    const cacheUrl = new URL(c.req.url);
+    cacheUrl.pathname = `/api/config/${user.id}`;
+    const cacheKey = new Request(cacheUrl.toString(), c.req);
+    const cache = await caches.open('user-configs');
+
+    let response = await cache.match(cacheKey);
+    if (response) {
+        return response;
+    }
+
     const row = await c.env.DB.prepare('SELECT * FROM user_configs WHERE user_id = ?').bind(user.id).first();
 
     if (!row) {
-        return c.json(null, 404);
+        // Return default config for new users instead of 404
+        const defaultResponse = c.json({
+            currency: 'ARS',
+            categories: {},
+            creditCards: []
+        });
+        defaultResponse.headers.set('Cache-Control', 's-maxage=86400');
+        c.executionCtx.waitUntil(cache.put(cacheKey, defaultResponse.clone()));
+        return defaultResponse;
     }
 
     const config = {
@@ -416,34 +527,51 @@ app.get('/api/config', authMiddleware, async (c) => {
         // @ts-ignore
         categories: row.categories ? JSON.parse(row.categories) : {},
         // @ts-ignore
-        creditCards: row.creditCards ? JSON.parse(row.creditCards) : []
+        creditCards: row.creditCards ? JSON.parse(row.creditCards) : [],
+        // @ts-ignore
+        applications: (row.applications && JSON.parse(row.applications as string).length > 0) 
+            ? JSON.parse(row.applications as string) 
+            : ['BRUBANK', 'SANTANDER RIO', 'MERCADO PAGO', 'GALICIA', 'UALA', 'MACRO', 'PERSONAL PAY', 'BBVA']
     };
 
-    return c.json(config);
+    const cJsonResponse = c.json(config);
+    cJsonResponse.headers.set('Cache-Control', 's-maxage=86400');
+    c.executionCtx.waitUntil(cache.put(cacheKey, cJsonResponse.clone()));
+
+    return cJsonResponse;
 });
 
 app.post('/api/config', authMiddleware, async (c) => {
     const user = c.get('user');
     const body = await c.req.json();
-    const { currency, categories, creditCards } = body;
+    const { currency, categories, creditCards, applications } = body;
 
     try {
         const categoriesJson = JSON.stringify(categories || {});
         const creditCardsJson = JSON.stringify(creditCards || []);
+        const applicationsJson = JSON.stringify(applications || []);
 
         const exists = await c.env.DB.prepare('SELECT 1 FROM user_configs WHERE user_id = ?').bind(user.id).first();
 
         if (exists) {
-            await c.env.DB.prepare('UPDATE user_configs SET currency = ?, categories = ?, creditCards = ? WHERE user_id = ?')
-                .bind(currency || '$', categoriesJson, creditCardsJson, user.id).run();
+            await c.env.DB.prepare('UPDATE user_configs SET currency = ?, categories = ?, creditCards = ?, applications = ? WHERE user_id = ?')
+                .bind(currency || '$', categoriesJson, creditCardsJson, applicationsJson, user.id).run();
         } else {
-            await c.env.DB.prepare('INSERT INTO user_configs (user_id, currency, categories, creditCards) VALUES (?, ?, ?, ?)')
-                .bind(user.id, currency || '$', categoriesJson, creditCardsJson).run();
+            await c.env.DB.prepare('INSERT INTO user_configs (user_id, currency, categories, creditCards, applications) VALUES (?, ?, ?, ?, ?)')
+                .bind(user.id, currency || '$', categoriesJson, creditCardsJson, applicationsJson).run();
         }
+
+        // Invalidate cache
+        const cacheUrl = new URL(c.req.url);
+        cacheUrl.pathname = `/api/config/${user.id}`;
+        const cacheKey = new Request(cacheUrl.toString(), c.req);
+        const cache = await caches.open('user-configs');
+        c.executionCtx.waitUntil(cache.delete(cacheKey));
+
         return c.json({ success: true });
     } catch (e: any) {
         console.error('[POST /config] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -455,27 +583,14 @@ app.get('/api/parties/:id/expenses', authMiddleware, async (c) => {
 
 // --- INSTALLMENT PLANS ROUTES ---
 
-// Get Installment Plans (Multi-Participant Support)
+// Get Party Installment Plans
 app.get('/api/parties/:partyId/installments', authMiddleware, async (c) => {
     const { partyId } = c.req.param();
-    const plans = await c.env.DB.prepare('SELECT * FROM installment_plans WHERE party_id = ? ORDER BY created_at DESC')
-        .bind(partyId)
-        .all();
+    const plans = await c.env.DB.prepare('SELECT * FROM installment_plans WHERE party_id = ? ORDER BY created_at DESC').bind(partyId).all();
 
-    // Parse participants from participants column (new) or debtor_id (legacy fallback)
-    const enrichedPlans = (plans.results || []).map((plan: any) => {
+    // Map to include participants correctly and handle legacy
+    const enrichedPlans = plans.results.map((plan: any) => {
         let participants = [];
-
-        // Priority 1: New participants column
-        if (plan.participants) {
-            try {
-                const parsed = JSON.parse(plan.participants);
-                participants = Array.isArray(parsed) ? parsed : [plan.participants];
-            } catch (e) {
-                console.warn('Failed to parse participants column:', e);
-            }
-        }
-
         // Priority 2: Fallback to debtor_id (legacy or single participant)
         if (!participants || participants.length === 0) {
             try {
@@ -493,35 +608,53 @@ app.get('/api/parties/:partyId/installments', authMiddleware, async (c) => {
     return c.json(enrichedPlans);
 });
 
-// Create Installment Plan (Multi-Participant Support)
+// Create Installment Plan (Multi-Participant Support + Currency + Recurring)
 app.post('/api/parties/:partyId/installments', authMiddleware, async (c) => {
     const { partyId } = c.req.param();
     const body = await c.req.json();
-    const { description, totalAmount, installments, payerId, participantIds, debtorId, startMonth } = body;
+    const {
+        description, total_amount, installments_count, installment_amount,
+        payer_id, participants, start_date, currency, exchange_rate,
+        is_recurring,
+        // Legacy fallbacks
+        totalAmount, installments, payerId, participantIds, debtorId, startMonth
+    } = body;
 
-    // Backward compatibility: support old debtorId format
-    const participants = participantIds || (debtorId ? [debtorId] : []);
+    // Use snake_case with camelCase/Legacy fallbacks
+    const fDescription = description || body.name;
+    const fTotalAmount = total_amount ?? totalAmount;
+    const fInstallments = installments_count ?? installments;
+    const fPayerId = payer_id ?? payerId;
+    const fParticipants = participants || participantIds || (debtorId ? [debtorId] : []);
+    const fStartDate = start_date ?? startMonth;
+    const fCurrency = currency || 'ARS';
+    const fExchangeRate = exchange_rate || body.exchangeRate || 1;
+    const fIsRecurring = is_recurring ? 1 : 0;
 
-    if (!participants || participants.length === 0) {
+    if (!fParticipants || fParticipants.length === 0) {
         return c.json({ error: 'At least one participant required' }, 400);
     }
 
     const id = crypto.randomUUID();
     const createdAt = Date.now();
-    // participantIds contains only debtors, not the payer
-    // Total people splitting the cost = participants + payer
-    const totalPeople = participants.length + 1;
-    const perPersonAmount = totalAmount / (totalPeople * installments);
-    const participantsJson = JSON.stringify(participants);
+    const participantsJson = JSON.stringify(fParticipants);
+
+    // If installment_amount is NOT provided (Legacy), calculate it using the standard formula.
+    // If it IS provided, it means the frontend did special math (e.g., Recurring expenses).
+    let finalInstallmentAmount = installment_amount;
+    if (finalInstallmentAmount === undefined) {
+        const totalPeople = fParticipants.length + 1;
+        finalInstallmentAmount = fTotalAmount / (totalPeople * (fInstallments || 1));
+    }
 
     try {
         const user = c.get('user');
         const createdBy = user.id;
 
         await c.env.DB.prepare(
-            'INSERT INTO installment_plans (id, party_id, description, total_amount, installments_count, installment_amount, payer_id, debtor_id, participants, start_date, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO installment_plans (id, party_id, description, total_amount, installments_count, installment_amount, payer_id, debtor_id, participants, start_date, created_at, created_by, currency, exchange_rate, is_recurring) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
-            .bind(id, partyId, description, totalAmount, installments, perPersonAmount, payerId, participants[0], participantsJson, startMonth, createdAt, createdBy)
+            .bind(id, partyId, fDescription, fTotalAmount, fInstallments, finalInstallmentAmount, fPayerId, fParticipants[0], participantsJson, fStartDate, createdAt, createdBy, fCurrency, fExchangeRate, fIsRecurring)
             .run();
 
         return c.json({ id, success: true });
@@ -536,24 +669,43 @@ app.put('/api/parties/:partyId/installments/:id', authMiddleware, async (c) => {
     const { partyId, id } = c.req.param();
     const user = c.get('user');
     const body = await c.req.json();
-    const { description, totalAmount, installments, payerId, participantIds, debtorId, startMonth } = body;
+    const {
+        description, total_amount, installments_count, installment_amount,
+        payer_id, participants, start_date, currency, exchange_rate,
+        is_recurring,
+        // Legacy fallbacks
+        totalAmount, installments, payerId, participantIds, debtorId, startMonth
+    } = body;
 
     // Check ownership
     const existing = await c.env.DB.prepare('SELECT created_by FROM installment_plans WHERE id = ?').bind(id).first();
-    if (!existing || existing.created_by !== user.id) {
+    if (!existing || (existing.created_by !== user.id && existing.payer_id !== user.id)) {
         return c.json({ error: 'Unauthorized to edit this plan' }, 403);
     }
 
-    const participants = participantIds || (debtorId ? [debtorId] : []);
-    const totalPeople = participants.length + 1;
-    const perPersonAmount = totalAmount / (totalPeople * installments);
-    const participantsJson = JSON.stringify(participants);
+    const fDescription = description || body.name;
+    const fTotalAmount = total_amount ?? totalAmount;
+    const fInstallments = installments_count ?? installments;
+    const fPayerId = payer_id ?? payerId;
+    const fParticipants = participants || participantIds || (debtorId ? [debtorId] : []);
+    const fStartDate = start_date ?? startMonth;
+    const fCurrency = currency || 'ARS';
+    const fExchangeRate = exchange_rate || body.exchangeRate || 1;
+    const fIsRecurring = is_recurring ? 1 : 0;
+
+    let finalInstallmentAmount = installment_amount;
+    if (finalInstallmentAmount === undefined) {
+        const totalPeople = fParticipants.length + 1;
+        finalInstallmentAmount = fTotalAmount / (totalPeople * (fInstallments || 1));
+    }
+
+    const participantsJson = JSON.stringify(fParticipants);
 
     try {
         await c.env.DB.prepare(
-            'UPDATE installment_plans SET description = ?, total_amount = ?, installments_count = ?, installment_amount = ?, payer_id = ?, debtor_id = ?, participants = ?, start_date = ? WHERE id = ?'
+            'UPDATE installment_plans SET description = ?, total_amount = ?, installments_count = ?, installment_amount = ?, payer_id = ?, debtor_id = ?, participants = ?, start_date = ?, currency = ?, exchange_rate = ?, is_recurring = ? WHERE id = ?'
         )
-            .bind(description, totalAmount, installments, perPersonAmount, payerId, participants[0], participantsJson, startMonth, id)
+            .bind(fDescription, fTotalAmount, fInstallments, finalInstallmentAmount, fPayerId, fParticipants[0], participantsJson, fStartDate, fCurrency, fExchangeRate, fIsRecurring, id)
             .run();
 
         return c.json({ success: true });
@@ -571,7 +723,7 @@ app.delete('/api/parties/:partyId/installments/:id', authMiddleware, async (c) =
 
 app.get('/api/installments', authMiddleware, async (c) => {
     const user = c.get('user');
-    const res = await c.env.DB.prepare('SELECT * FROM installments WHERE user_id = ?').bind(user.id).all();
+    const res = await c.env.DB.prepare('SELECT *, linked_income_id AS linkedIncomeId FROM installments WHERE user_id = ?').bind(user.id).all();
     return c.json(res.results);
 });
 
@@ -593,11 +745,11 @@ app.post('/api/installments', authMiddleware, async (c) => {
         const exists = await c.env.DB.prepare('SELECT id FROM installments WHERE id = ? AND user_id = ?').bind(id, user.id).first();
 
         if (exists) {
-            await c.env.DB.prepare('UPDATE installments SET name=?, totalAmount=?, installments=?, startDate=?, description=?, category=?, cardName=? WHERE id=? AND user_id=?')
-                .bind(name, totalAmount, installments, startDate, description, category, cardName, id, user.id).run();
+            await c.env.DB.prepare('UPDATE installments SET name=?, totalAmount=?, installments=?, startDate=?, description=?, category=?, cardName=?, linked_income_id=?, application=? WHERE id=? AND user_id=?')
+                .bind(name, totalAmount, installments, startDate, description, category, cardName, body.linkedIncomeId || null, body.application || null, id, user.id).run();
         } else {
-            await c.env.DB.prepare('INSERT INTO installments (id, name, totalAmount, installments, startDate, description, category, cardName, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-                .bind(id, name, totalAmount, installments, startDate, description, category, cardName, user.id).run();
+            await c.env.DB.prepare('INSERT INTO installments (id, name, totalAmount, installments, startDate, description, category, cardName, linked_income_id, application, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                .bind(id, name, totalAmount, installments, startDate, description, category, cardName, body.linkedIncomeId || null, body.application || null, user.id).run();
         }
         return c.json({ success: true });
     } catch (e: any) {
@@ -613,34 +765,6 @@ app.delete('/api/installments/:id', authMiddleware, async (c) => {
     return c.json({ success: true });
 });
 
-app.post('/api/config', authMiddleware, async (c) => {
-    const user = c.get('user');
-    let body;
-    try { body = await c.req.json(); } catch (e) { return c.json({ error: 'Invalid JSON' }, 400); }
-
-    const currency = body.currency || 'ARS';
-    const categories = body.categories || {};
-    const creditCards = body.creditCards || [];
-
-    const categoriesJson = JSON.stringify(categories);
-    const creditCardsJson = JSON.stringify(creditCards);
-
-    try {
-        const exists = await c.env.DB.prepare('SELECT user_id FROM user_configs WHERE user_id = ?').bind(user.id).first();
-
-        if (exists) {
-            await c.env.DB.prepare('UPDATE user_configs SET currency=?, categories=?, creditCards=? WHERE user_id=?')
-                .bind(currency, categoriesJson, creditCardsJson, user.id).run();
-        } else {
-            await c.env.DB.prepare('INSERT INTO user_configs (user_id, currency, categories, creditCards) VALUES (?, ?, ?, ?)')
-                .bind(user.id, currency, categoriesJson, creditCardsJson).run();
-        }
-        return c.json({ success: true });
-    } catch (e: any) {
-        console.error('[POST /config] Error:', e);
-        return c.json({ error: 'Database error', details: e.message }, 500);
-    }
-});
 
 // Category Budgets
 app.get('/api/budgets', authMiddleware, async (c) => {
@@ -701,7 +825,7 @@ app.post('/api/parties', authMiddleware, async (c) => {
         return c.json({ success: true, partyId });
     } catch (e: any) {
         console.error('[POST /parties] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -731,7 +855,7 @@ app.post('/api/parties/invite', authMiddleware, async (c) => {
         return c.json({ success: true });
     } catch (e: any) {
         console.error('[POST /parties/invite] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -755,7 +879,7 @@ app.put('/api/parties/:id', authMiddleware, async (c) => {
 
         return c.json({ success: true });
     } catch (e: any) {
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -781,9 +905,10 @@ app.delete('/api/parties/members/:memberId', authMiddleware, async (c) => {
 
 // 2.5 Add Guest Member
 app.post('/api/parties/:id/guests', authMiddleware, async (c) => {
+    const { name } = await c.req.json();
     const user = c.get('user');
     const partyId = c.req.param('id');
-    const { name } = await c.req.json();
+    console.log('[POST /api/parties/:id/guests] Start', { partyId, guestName: name, userId: user?.id });
 
     try {
         // Verify creator permission? Or any member? Let's say any member for now for ease.
@@ -791,11 +916,12 @@ app.post('/api/parties/:id/guests', authMiddleware, async (c) => {
             .bind(partyId, user.id, 'accepted').first();
         if (!membership) return c.json({ error: 'Not a member' }, 403);
 
+        const now = new Date().toISOString();
         const memberId = crypto.randomUUID();
         // Insert guest
         // user_id is NULL for guests.
-        await c.env.DB.prepare('INSERT INTO party_members (id, party_id, user_id, status, is_guest, guest_name) VALUES (?, ?, NULL, ?, 1, ?)')
-            .bind(memberId, partyId, 'accepted', name).run();
+        await c.env.DB.prepare('INSERT INTO party_members (id, party_id, user_id, status, is_guest, guest_name, joined_at) VALUES (?, ?, NULL, ?, 1, ?, ?)')
+            .bind(memberId, partyId, 'accepted', name, now).run();
 
         return c.json({ success: true, memberId });
     } catch (e: any) {
@@ -827,17 +953,19 @@ app.get('/api/debug/invitations', async (c) => {
 app.get('/api/invitations', authMiddleware, async (c) => {
     const user = c.get('user');
     try {
-        // Find invites where user_id matches OR invited_email matches user's email
-        // We need user's email. It should be in the JWT payload or we fetch it.
-        // In our authMiddleware we set 'user' from JWT. Let's assume it has email or we fetch.
-        // JWT has: id, username, role.
+        console.log(`[GET /api/invitations] START - User: ${user.id}`);
 
-        // Fetch full user to get email
-        const fullUser = await c.env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(user.id).first();
-        // @ts-ignore
-        const email = fullUser?.email;
-
-        console.log(`[GET /invitations] Checking for user ${user.id} (${user.username}) with email: ${email}`);
+        // Fetch full user to get email with error handling
+        let email = null;
+        try {
+            const fullUser = await c.env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(user.id).first();
+            // @ts-ignore
+            email = fullUser?.email || null;
+            console.log(`[GET /api/invitations] User email: ${email}`);
+        } catch (emailErr) {
+            console.error('[GET /api/invitations] Error fetching user email:', emailErr);
+            // Continue without email
+        }
 
         let query = 'SELECT pm.id, p.name as partyName, pm.invited_email FROM party_members pm JOIN parties p ON pm.party_id = p.id WHERE pm.status = ? AND (pm.user_id = ?';
         const params = ['pending', user.id];
@@ -848,13 +976,14 @@ app.get('/api/invitations', authMiddleware, async (c) => {
         }
         query += ')';
 
+        console.log(`[GET /api/invitations] Executing query...`);
         const invites = await c.env.DB.prepare(query).bind(...params).all();
-        console.log(`[GET /invitations] Found ${invites.results?.length || 0} invites`);
+        console.log(`[GET /api/invitations] SUCCESS - Found ${invites.results?.length || 0} invites`);
 
-        return c.json(invites.results);
+        return c.json(invites.results || []);
     } catch (e: any) {
-        console.error('[GET /invitations] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        console.error('[GET /api/invitations] FATAL Error:', e.message, e.stack);
+        return c.json({ error: 'Database error', details: e.message }, 500);
     }
 });
 
@@ -874,7 +1003,7 @@ app.post('/api/invitations/:id/respond', authMiddleware, async (c) => {
         return c.json({ success: true });
     } catch (e: any) {
         console.error('[POST /invitations/respond] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -882,16 +1011,22 @@ app.post('/api/invitations/:id/respond', authMiddleware, async (c) => {
 app.get('/api/parties', authMiddleware, async (c) => {
     const user = c.get('user');
     try {
+        console.log(`[GET /api/parties] START - User: ${user.id}`);
+
         const parties = await c.env.DB.prepare(`
-            SELECT p.*, u.username as creator_name 
+            SELECT p.*, u.username as creator_name,
+            (SELECT COUNT(*) FROM pending_approvals pa WHERE pa.party_id = p.id AND pa.status = 'PENDING') as pending_count
             FROM parties p
             JOIN party_members pm ON p.id = pm.party_id
             LEFT JOIN users u ON p.created_by = u.id
             WHERE pm.user_id = ? AND pm.status = 'accepted'
-        `).bind(user.id).all();
-        return c.json(parties.results);
+                `).bind(user.id).all();
+
+        console.log(`[GET /api/parties] SUCCESS - Found ${parties.results?.length || 0} parties`);
+        return c.json(parties.results || []);
     } catch (e: any) {
-        return c.json({ error: 'Database error' }, 500);
+        console.error('[GET /api/parties] FATAL Error:', e.message, e.stack);
+        return c.json({ error: 'Database error', details: e.message }, 500);
     }
 });
 
@@ -909,19 +1044,19 @@ app.get('/api/parties/:id', authMiddleware, async (c) => {
 
         const expenses = await c.env.DB.prepare('SELECT * FROM party_expenses WHERE party_id = ? ORDER BY date DESC').bind(partyId).all();
         const members = await c.env.DB.prepare(`
-            SELECT COALESCE(u.id, pm.id) as id, 
-                   CASE WHEN pm.is_guest = 1 THEN pm.guest_name ELSE u.username END as username,
-                   CASE WHEN pm.is_guest = 1 THEN NULL ELSE u.email END as email,
-                   u.firstName, u.lastName, u.avatar, 
-                   pm.status, pm.invited_email, pm.id as memberId, pm.is_guest, pm.guest_name
+            SELECT COALESCE(u.id, pm.id) as id,
+                CASE WHEN pm.is_guest = 1 THEN pm.guest_name ELSE u.username END as username,
+                    CASE WHEN pm.is_guest = 1 THEN NULL ELSE u.email END as email,
+                        u.firstName, u.lastName, u.avatar,
+                        pm.status, pm.invited_email, pm.id as memberId, pm.is_guest, pm.guest_name
             FROM party_members pm 
             LEFT JOIN users u ON pm.user_id = u.id 
-            WHERE pm.party_id = ? 
-        `).bind(partyId).all();
+            WHERE pm.party_id = ?
+                `).bind(partyId).all();
 
         return c.json({ expenses: expenses.results, members: members.results });
     } catch (e: any) {
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -967,7 +1102,7 @@ app.post('/api/parties/:id/expenses', authMiddleware, async (c) => {
         return c.json({ success: true, expenseId });
     } catch (e: any) {
         console.error('[POST /parties/expenses] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -999,9 +1134,9 @@ app.put('/api/parties/:partyId/expenses/:expenseId', authMiddleware, async (c) =
         statements.push(
             c.env.DB.prepare(`
                 UPDATE party_expenses 
-                SET description=?, amount=?, date=?, participants=?, category=?, installments_count=?, card_name=?, first_payment_date=?
-                WHERE id=?
-            `).bind(description, amount, date, participantsJson, category, installmentsCount, cardName, firstPaymentDate, expenseId)
+                SET description =?, amount =?, date =?, participants =?, category =?, installments_count =?, card_name =?, first_payment_date =?
+                WHERE id =?
+                    `).bind(description, amount, date, participantsJson, category, installmentsCount, cardName, firstPaymentDate, expenseId)
         );
 
         // 3. Update Personal Installment if exists (and owned by user)
@@ -1018,7 +1153,7 @@ app.put('/api/parties/:partyId/expenses/:expenseId', authMiddleware, async (c) =
         return c.json({ success: true });
     } catch (e: any) {
         console.error('[PUT /parties/expenses] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -1029,7 +1164,7 @@ app.delete('/api/parties/:partyId/expenses/:expenseId', authMiddleware, async (c
         const partyId = c.req.param('partyId');
         const expenseId = c.req.param('expenseId');
 
-        console.log(`[DELETE] Request: Party ${partyId}, Expense ${expenseId}, User ${user.id}`);
+        console.log(`[DELETE] Request: Party ${partyId}, Expense ${expenseId}, User ${user.id} `);
 
         if (!partyId || !expenseId) return c.json({ error: 'Missing parameters' }, 400);
 
@@ -1049,17 +1184,141 @@ app.delete('/api/parties/:partyId/expenses/:expenseId', authMiddleware, async (c
         const isCreator = party && party.created_by === user.id;
 
         if (!isPayer && !isCreator) {
-            console.log(`[DELETE] Unauthorized. Payer: ${expense.payer_id}, Creator: ${party?.created_by}, User: ${user.id}`);
+            console.log(`[DELETE] Unauthorized.Payer: ${expense.payer_id}, Creator: ${party?.created_by}, User: ${user.id} `);
             return c.json({ error: 'Unauthorized: You are not the payer or party creator' }, 403);
         }
 
         await c.env.DB.prepare('DELETE FROM party_expenses WHERE id = ?').bind(expenseId).run();
         return c.json({ success: true });
     } catch (e: any) {
-        console.error('[DELETE ERROR]', e);
-        return c.json({ error: `Database error: ${e.message || 'Unknown'}` }, 500);
+        console.error('[DELETE] Error:', e);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
+
+// --- INTEGRITY SYSTEM (APPROVALS) ROUTES ---
+
+// 9. Get Pending Approvals
+app.get('/api/parties/:id/approvals', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const partyId = c.req.param('id');
+    try {
+        const approvals = await c.env.DB.prepare(`
+            SELECT pa.*, u.username as requester_name 
+            FROM pending_approvals pa
+            JOIN users u ON pa.requester_id = u.id
+            WHERE pa.party_id = ? AND pa.status = 'PENDING'
+            ORDER BY pa.created_at DESC
+        `).bind(partyId).all();
+        return c.json(approvals.results);
+    } catch (e: any) {
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// 10. Create Approval Request
+app.post('/api/parties/:id/approvals', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const partyId = c.req.param('id');
+    const { target_expense_id, action_type, data_payload, reason } = await c.req.json();
+
+    const approvalId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+
+    try {
+        await c.env.DB.prepare(`
+            INSERT INTO pending_approvals (id, party_id, requester_id, target_expense_id, action_type, data_payload, reason, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+        `).bind(approvalId, partyId, user.id, target_expense_id, action_type, JSON.stringify(data_payload), reason, createdAt).run();
+
+        return c.json({ success: true, approvalId });
+    } catch (e: any) {
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// 11. Decide Approval (Approve/Reject)
+app.post('/api/parties/:id/approvals/:approvalId/decide', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const partyId = c.req.param('id');
+    const approvalId = c.req.param('approvalId');
+    const { decision } = await c.req.json(); // 'APPROVED' or 'REJECTED'
+
+    try {
+        const approval = await c.env.DB.prepare('SELECT * FROM pending_approvals WHERE id = ?').bind(approvalId).first();
+        if (!approval) return c.json({ error: 'Approval request not found' }, 404);
+
+        if (decision === 'REJECTED') {
+            await c.env.DB.prepare("UPDATE pending_approvals SET status = 'REJECTED' WHERE id = ?").bind(approvalId).run();
+            return c.json({ success: true, status: 'REJECTED' });
+        }
+
+        if (decision === 'APPROVED') {
+            // EXECUTE ACTION
+            if (approval.action_type === 'DELETE') {
+                // Try deleting from both, one will succeed or both if somehow linked
+                await c.env.DB.prepare('DELETE FROM party_expenses WHERE id = ?').bind(approval.target_expense_id).run();
+                await c.env.DB.prepare('DELETE FROM installment_plans WHERE id = ?').bind(approval.target_expense_id).run();
+            } else if (approval.action_type === 'EDIT') {
+                const payload = JSON.parse(approval.data_payload as string);
+
+                if (payload.installmentData) {
+                    // Update installment_plans table
+                    const fDescription = payload.description || payload.name;
+                    const fTotalAmount = payload.total_amount ?? payload.amount;
+                    const fInstallments = payload.installments_count ?? (payload.installmentData?.installments || 1);
+                    const fPayerId = payload.payer_id ?? payload.payerId;
+                    const fParticipants = payload.participants || [];
+                    const fStartDate = payload.start_date ?? payload.date;
+                    const fCurrency = payload.currency || 'ARS';
+                    const fExchangeRate = payload.exchange_rate || 1;
+                    const fIsRecurring = payload.is_recurring ? 1 : 0;
+                    const participantsJson = JSON.stringify(fParticipants);
+
+                    // Re-calculate installment amount if needed
+                    let finalInstallmentAmount = payload.installment_amount;
+                    if (finalInstallmentAmount === undefined) {
+                        const totalPeople = fParticipants.length + 1;
+                        finalInstallmentAmount = fTotalAmount / (totalPeople * (fInstallments || 1));
+                    }
+
+                    const fDebtorId = fParticipants[0] || '';
+
+                    await c.env.DB.prepare(`
+                        UPDATE installment_plans 
+                        SET description = ?, total_amount = ?, installments_count = ?, installment_amount = ?, payer_id = ?, debtor_id = ?, participants = ?, start_date = ?, currency = ?, exchange_rate = ?, is_recurring = ?
+                        WHERE id = ?
+                    `).bind(fDescription, fTotalAmount, fInstallments, finalInstallmentAmount, fPayerId, fDebtorId, participantsJson, fStartDate, fCurrency, fExchangeRate, fIsRecurring, approval.target_expense_id).run();
+
+                } else {
+                    // Update party_expenses table
+                    const description = payload.description || payload.name;
+                    const amount = payload.amount !== undefined ? payload.amount : payload.total_amount;
+                    const date = payload.date || payload.start_date;
+                    const { participants, category } = payload;
+
+                    const participantsJson = JSON.stringify(participants || []);
+
+                    await c.env.DB.prepare(`
+                        UPDATE party_expenses 
+                        SET description =?, amount =?, date =?, participants =?, category =?, installments_count = 1, card_name = NULL, first_payment_date = NULL
+                        WHERE id =?
+                    `).bind(description, amount, date, participantsJson, category || null, approval.target_expense_id).run();
+                }
+            }
+
+            await c.env.DB.prepare("UPDATE pending_approvals SET status = 'APPROVED' WHERE id = ?").bind(approvalId).run();
+            return c.json({ success: true, status: 'APPROVED' });
+        }
+
+        return c.json({ error: 'Invalid decision' }, 400);
+
+    } catch (e: any) {
+        console.error('[POST /decide] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
 
 // 9. Delete Party
 app.delete('/api/parties/:id', authMiddleware, async (c) => {
@@ -1079,7 +1338,7 @@ app.delete('/api/parties/:id', authMiddleware, async (c) => {
 
         return c.json({ success: true });
     } catch (e) {
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -1108,7 +1367,7 @@ app.get('/api/parties/:id/nicknames', authMiddleware, async (c) => {
         return c.json({ nicknames: nicknamesMap });
     } catch (e: any) {
         console.error('[GET /parties/nicknames] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
     }
 });
 
@@ -1139,19 +1398,269 @@ app.put('/api/parties/:id/nicknames/:memberId', authMiddleware, async (c) => {
         // Upsert nickname (SQLite REPLACE or INSERT OR REPLACE)
         const nicknameId = crypto.randomUUID();
         await c.env.DB.prepare(`
-            INSERT INTO member_nicknames (id, user_id, party_id, member_id, nickname) 
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO member_nicknames(id, user_id, party_id, member_id, nickname)
+            VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(user_id, party_id, member_id) 
             DO UPDATE SET nickname = excluded.nickname
-        `).bind(nicknameId, user.id, partyId, memberId, nickname.trim()).run();
+                `).bind(nicknameId, user.id, partyId, memberId, nickname.trim()).run();
 
         return c.json({ success: true });
     } catch (e: any) {
         console.error('[PUT /parties/nicknames] Error:', e);
-        return c.json({ error: 'Database error' }, 500);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
+    }
+});
+
+// ============================================
+// ADMIN ROUTES - User Approval System
+// ============================================
+
+// Get all users (Admin only)
+app.get('/api/admin/users', authMiddleware, adminMiddleware, async (c) => {
+    try {
+        console.log('[GET /api/admin/users] Fetching all users');
+
+        const users = await c.env.DB.prepare(`
+            SELECT 
+                id,
+                username,
+                email,
+                role,
+                approval_status,
+                created_at,
+                last_login_at,
+                avatar,
+                firstName,
+                lastName,
+                google_id
+            FROM users
+            ORDER BY last_login_at DESC, created_at DESC
+        `).all();
+
+        return c.json({ users: users.results || [] });
+    } catch (e: any) {
+        console.error('[GET /api/admin/users] Error:', e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// Get pending users count (Admin only)
+app.get('/api/admin/pending-count', authMiddleware, adminMiddleware, async (c) => {
+    try {
+        const result = await c.env.DB.prepare(`
+            SELECT COUNT(*) as count 
+            FROM users 
+            WHERE approval_status = 'PENDING'
+            `).first();
+
+        // @ts-ignore
+        return c.json({ count: result?.count || 0 });
+    } catch (e: any) {
+        console.error('[GET /api/admin/pending-count] Error:', e);
+        return c.json({ error: 'Database error', details: e instanceof Error ? e.message : String(e) }, 500);
+    }
+});
+
+// Approve user (Admin only)
+app.post('/api/admin/users/:userId/approve', authMiddleware, adminMiddleware, async (c) => {
+    const userId = c.req.param('userId');
+    const admin = c.get('user');
+    const now = new Date().toISOString();
+
+    try {
+        console.log(`[POST / api / admin / users / ${userId}/approve]Admin: ${admin.email} `);
+
+        // Check if user exists
+        const user = await c.env.DB.prepare('SELECT id, email, approval_status FROM users WHERE id = ?')
+            .bind(userId).first();
+
+        if (!user) {
+            return c.json({ error: 'User not found' }, 404);
+        }
+
+        // Update approval status
+        await c.env.DB.prepare(`
+            UPDATE users 
+            SET approval_status = 'APPROVED',
+            approval_decision_at = ?,
+            approval_decision_by = ?
+                WHERE id = ?
+                    `).bind(now, admin.id, userId).run();
+
+        console.log(`[POST / api / admin / users / ${userId}/approve] User approved successfully`);
+
+        return c.json({
+            success: true,
+            message: 'User approved successfully',
+            // @ts-ignore
+            userEmail: user.email
+        });
+    } catch (e: any) {
+        console.error(`[POST / api / admin / users / ${userId}/approve]Error: `, e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// Reject user (Admin only)
+app.post('/api/admin/users/:userId/reject', authMiddleware, adminMiddleware, async (c) => {
+    const userId = c.req.param('userId');
+    const admin = c.get('user');
+    const now = new Date().toISOString();
+
+    try {
+        console.log(`[POST / api / admin / users / ${userId}/reject]Admin: ${admin.email} `);
+
+        // Check if user exists
+        const user = await c.env.DB.prepare('SELECT id, email, approval_status FROM users WHERE id = ?')
+            .bind(userId).first();
+
+        if (!user) {
+            return c.json({ error: 'User not found' }, 404);
+        }
+
+        // Update approval status
+        await c.env.DB.prepare(`
+            UPDATE users 
+            SET approval_status = 'REJECTED',
+            approval_decision_at = ?,
+            approval_decision_by = ?
+                WHERE id = ?
+                    `).bind(now, admin.id, userId).run();
+
+        console.log(`[POST / api / admin / users / ${userId}/reject] User rejected successfully`);
+
+        return c.json({
+            success: true,
+            message: 'User rejected successfully',
+            // @ts-ignore
+            userEmail: user.email
+        });
+    } catch (e: any) {
+        console.error(`[POST / api / admin / users / ${userId}/reject]Error: `, e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
+    }
+});
+
+// Delete user (Admin only) - Completely remove from system
+app.delete('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (c) => {
+    const userId = c.req.param('userId');
+    const admin = c.get('user');
+
+    try {
+        console.log(`[DELETE / api / admin / users / ${userId}]Admin: ${admin.email} `);
+
+        // Check if user exists
+        const user = await c.env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+            .bind(userId).first();
+
+        if (!user) {
+            return c.json({ error: 'User not found' }, 404);
+        }
+
+        // Prevent admin from deleting themselves
+        if (userId === admin.id) {
+            return c.json({ error: 'Cannot delete your own admin account' }, 400);
+        }
+
+        // 1. Delete Installment Plans (Foreign Key Constraint) - Only where user is critical (Payer/Debtor)
+        try {
+            await c.env.DB.prepare('DELETE FROM installment_plans WHERE payer_id = ? OR debtor_id = ?')
+                .bind(userId, userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete installments:`, err);
+            // Continue? If FK constraint, it will fail. If column missing, it might work if we are lucky with schema version.
+            // But we should probably throw to inform user.
+            throw new Error(`Failed to delete installments: ${err.message}`);
+        }
+
+        // 2. Delete Memberships (Clean up)
+        try {
+            await c.env.DB.prepare('DELETE FROM party_members WHERE user_id = ?').bind(userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete memberships:`, err);
+            throw new Error(`Failed to delete memberships: ${err.message}`);
+        }
+
+        // 3. Delete Pending Approvals (Cascading checks)
+        try {
+            // "target_owner_id" does not exist in schema 0002. Only requester_id.
+            // Also, requester_id has ON DELETE CASCADE in schema, but we manual delete to be safe.
+            await c.env.DB.prepare('DELETE FROM pending_approvals WHERE requester_id = ?').bind(userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete approvals:`, err);
+            // Verify if table exists warning (optional)
+            // Verify if table exists error? If so, ignore.
+            if (!err.message.includes('no such table')) {
+                throw new Error(`Failed to delete approvals: ${err.message}`);
+            }
+        }
+
+        // 4. Delete Expenses paid by user (Cascade - Destructive but necessary for FK constraints)
+        try {
+            await c.env.DB.prepare('DELETE FROM party_expenses WHERE payer_id = ?').bind(userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete expenses:`, err);
+            if (!err.message.includes('no such table')) {
+                throw new Error(`Failed to delete expenses: ${err.message}`);
+            }
+        }
+
+        // 5. Delete Parties created by user (Cascade - Removes entire groups)
+        try {
+            await c.env.DB.prepare('DELETE FROM parties WHERE created_by = ?').bind(userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete parties:`, err);
+            throw new Error(`Failed to delete parties: ${err.message}`);
+        }
+
+        // 0. Delete Personal Finance Data (Entries, Goals, Budgets, User Configs)
+        const personalTables = ['entries', 'goals', 'installments', 'user_configs', 'category_budgets'];
+        for (const table of personalTables) {
+            try {
+                await c.env.DB.prepare(`DELETE FROM ${table} WHERE user_id = ?`).bind(userId).run();
+            } catch (err: any) {
+                console.error(`[DELETE USER ${userId}] Failed to delete from ${table}:`, err);
+                if (!err.message.includes('no such table')) {
+                    // Log but continue? No, if FK exists it will block user delete.
+                    // But if we fail to delete here, we should probably stop.
+                    throw new Error(`Failed to delete from ${table}: ${err.message}`);
+                }
+            }
+        }
+
+        // 6. Delete User
+        try {
+            await c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+        } catch (err: any) {
+            console.error(`[DELETE USER ${userId}] Failed to delete user record:`, err);
+
+            // Debugging FK constraint: Find which tables reference users
+            let refInfo = "Unknown";
+            try {
+                const references = await c.env.DB.prepare("SELECT name, sql FROM sqlite_master WHERE sql LIKE '%REFERENCES users%'").all();
+                refInfo = JSON.stringify(references.results);
+            } catch (e) {
+                refInfo = "Could not fetch schema";
+            }
+
+            throw new Error(`Failed to delete user record: ${err.message}. Active FK References: ${refInfo}`);
+        }
+
+        console.log(`[DELETE / api / admin / users / ${userId}] User deleted successfully`);
+
+        return c.json({
+            success: true,
+            message: 'User deleted successfully',
+            // @ts-ignore
+            userEmail: user.email
+        });
+    } catch (e: any) {
+        console.error(`[DELETE / api / admin / users / ${userId}]Error: `, e);
+        return c.json({ error: 'Database error', details: e.message }, 500);
     }
 });
 
 export default app;
+
 
 

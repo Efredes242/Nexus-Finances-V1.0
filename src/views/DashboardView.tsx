@@ -218,6 +218,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           { label: 'Ingresos Totales', val: currentTotals[CategoryType.INCOME] || 0, icon: 'fa-wallet', color: 'text-emerald-400', bg: 'from-emerald-500/10 to-transparent' },
           { label: 'Gastos Fijos', val: currentTotals[CategoryType.FIXED_EXPENSE] || 0, icon: 'fa-lock', color: 'text-indigo-400', bg: 'from-indigo-500/10 to-transparent' },
           { label: 'Gastos Variables', val: currentTotals[CategoryType.VARIABLE_EXPENSE] || 0, icon: 'fa-shopping-bag', color: 'text-amber-400', bg: 'from-amber-500/10 to-transparent' },
+          { label: 'Gastos Compartidos', val: currentTotals[CategoryType.SHARED_EXPENSE] || 0, icon: 'fa-users', color: 'text-teal-400', bg: 'from-teal-500/10 to-transparent' },
           {
             label: 'Ahorro Real',
             val: (currentTotals[CategoryType.SAVINGS] || 0) + totalGoalsSaved,
@@ -262,6 +263,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     data={[
                       { name: 'Gastos Fijos', value: currentTotals[CategoryType.FIXED_EXPENSE] || 0, fill: '#818cf8' },
                       { name: 'Gastos Variables', value: currentTotals[CategoryType.VARIABLE_EXPENSE] || 0, fill: '#fbbf24' },
+                      { name: 'Gastos Compartidos', value: currentTotals[CategoryType.SHARED_EXPENSE] || 0, fill: '#2dd4bf' },
                       { name: 'Deudas', value: currentTotals[CategoryType.DEBT] || 0, fill: '#f43f5e' },
                       { name: 'Ahorro', value: currentTotals[CategoryType.SAVINGS] || 0, fill: '#34d399' },
                     ].filter(i => i.value > 0)}
@@ -281,7 +283,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="mt-4 text-center">
               <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 block">TOTAL GASTOS</span>
               <span className="text-3xl font-black text-white drop-shadow-lg">
-                {formatMoney((currentTotals[CategoryType.FIXED_EXPENSE] || 0) + (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) + (currentTotals[CategoryType.DEBT] || 0) + (currentTotals[CategoryType.SAVINGS] || 0))}
+                {formatMoney((currentTotals[CategoryType.FIXED_EXPENSE] || 0) + (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) + (currentTotals[CategoryType.SHARED_EXPENSE] || 0) + (currentTotals[CategoryType.DEBT] || 0) + (currentTotals[CategoryType.SAVINGS] || 0))}
               </span>
             </div>
           </div>
@@ -291,6 +293,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {[
               { name: 'Gastos Fijos', value: currentTotals[CategoryType.FIXED_EXPENSE] || 0, color: 'text-indigo-400', bg: 'bg-indigo-500' },
               { name: 'Gastos Variables', value: currentTotals[CategoryType.VARIABLE_EXPENSE] || 0, color: 'text-amber-400', bg: 'bg-amber-500' },
+              { name: 'Gastos Compartidos', value: currentTotals[CategoryType.SHARED_EXPENSE] || 0, color: 'text-teal-400', bg: 'bg-teal-500' },
               { name: 'Deudas', value: currentTotals[CategoryType.DEBT] || 0, color: 'text-rose-400', bg: 'bg-rose-500' },
               { name: 'Ahorro', value: currentTotals[CategoryType.SAVINGS] || 0, color: 'text-emerald-400', bg: 'bg-emerald-500' },
             ].filter(i => i.value > 0).map((item, idx) => (
@@ -304,7 +307,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-black text-slate-600 group-hover:text-white transition-colors opacity-30 group-hover:opacity-100">
-                    {((item.value / ((currentTotals[CategoryType.FIXED_EXPENSE] || 0) + (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) + (currentTotals[CategoryType.DEBT] || 0) + (currentTotals[CategoryType.SAVINGS] || 0))) * 100).toFixed(1)}%
+                    {((item.value / ((currentTotals[CategoryType.FIXED_EXPENSE] || 0) + (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) + (currentTotals[CategoryType.SHARED_EXPENSE] || 0) + (currentTotals[CategoryType.DEBT] || 0) + (currentTotals[CategoryType.SAVINGS] || 0))) * 100).toFixed(1)}%
                   </p>
                 </div>
               </div>

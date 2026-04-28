@@ -29,7 +29,7 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-center px-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center lg:px-4 gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-2xl font-black">Planificación Crediticia</h3>
@@ -39,7 +39,7 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
         </div>
         <Button onClick={() => setEditingInstallment({
           id: generateUUID(), name: '', totalAmount: 0, installments: 1, startDate: currentMonth, category: CategoryType.FIXED_EXPENSE, tag: 'Cuotas'
-        })} className="rounded-2xl">
+        })} className="rounded-2xl w-full sm:w-auto">
           <i className="fas fa-plus mr-2"></i> Nueva Financiación
         </Button>
       </div>
@@ -60,7 +60,7 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
             }, {} as Record<string, InstallmentPurchase[]>)
           ).sort((a, b) => a[0].localeCompare(b[0])).map(([cardName, purchases]) => (
             <div key={cardName} className="space-y-4">
-              <div className="flex items-center gap-3 px-2 border-b border-white/5 pb-2">
+              <div className="flex items-center gap-3 lg:px-2 border-b border-white/5 pb-2">
                 <div className={`w-10 h-10 rounded-xl ${themeColors.iconBg} flex items-center justify-center border border-white/10`}>
                   <i className={`fas fa-credit-card ${themeColors.accent}`}></i>
                 </div>
@@ -86,7 +86,7 @@ export const TarjetasView: React.FC<TarjetasViewProps> = ({
                             <p className="text-xl font-black">{formatMoney(p.totalAmount)}</p>
                           </div>
                           <div className="text-right">
-                            <span className={`text-sm font-black ${themeColors.accent}`}>{Math.max(0, diff + 1)}/{p.installments}</span>
+                            <span className={`text-sm font-black ${themeColors.accent}`}>{Math.min(p.installments, Math.max(0, diff + 1))}/{p.installments}</span>
                           </div>
                         </div>
 

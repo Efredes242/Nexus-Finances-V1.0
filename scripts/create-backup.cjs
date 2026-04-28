@@ -49,6 +49,8 @@ const excludeList = [
     'release-builds',
     'BACKUPS-FUNCIONALES',
     '.git',
+    '.gitignore',
+    '.env.local',
     'trash_*',
     'Instaladores',
     'build' // Maybe exclude build output? keeping src and config is enough

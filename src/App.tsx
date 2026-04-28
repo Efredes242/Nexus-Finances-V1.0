@@ -16,7 +16,7 @@ import { EntryModal } from './components/EntryModal';
 import { Card } from './components/Card';
 import { Button } from './components/Button';
 import { Login } from './components/Login';
-import { AdminPanel } from './components/AdminPanel';
+import AdminPanel from './components/AdminPanel';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { Layout } from './components/Layout';
@@ -35,18 +35,39 @@ import { api } from './services/api';
 import { exportToExcel } from './utils/excelExport';
 import { generateUUID } from './utils/helpers';
 import { OnboardingModal } from './components/OnboardingModal';
+import { UpdateDetailModal } from './components/UpdateDetailModal';
+import { AppUpdate } from './config/updates';
+
+// Helper function to format dates as DD/MM/YYYY
+const formatDateDDMMYYYY = (dateStr: string): string => {
+  const d = new Date(dateStr);
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
+};
 
 const App: React.FC = () => {
   // --- AUTH STATE ---
   const [user, setUser] = useState<any>(() => {
     const savedUser = localStorage.getItem('user') || sessionStorage.getItem('user');
-    return savedUser ? JSON.parse(savedUser) : null;
+    const parsedUser = savedUser ? JSON.parse(savedUser) : null;
+    console.log('[APP] Initial user state:', parsedUser ? `Logged in as ${parsedUser.username}` : 'Not logged in');
+    return parsedUser;
   });
   const [loadingData, setLoadingData] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // Mobile sidebar state
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true); // Desktop sidebar state
 
+  // Wrapper for setUser with logging
+  const handleSetUser = (newUser: any) => {
+    console.log('[APP] setUser called with:', newUser);
+    setUser(newUser);
+    console.log('[APP] User state updated');
+  };
+
   const handleLogout = () => {
+    console.log('[APP] Logout called');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     sessionStorage.removeItem('token');
@@ -69,16 +90,10 @@ const App: React.FC = () => {
             categories: DEFAULT_CATEGORY_MAP
           };
         } else {
-          // Ensure categories are merged with defaults if missing
-          parsed.config.categories = { ...DEFAULT_CATEGORY_MAP, ...parsed.config.categories };
-
-          // Restore defaults if specific categories are empty (as requested by user)
-          Object.keys(DEFAULT_CATEGORY_MAP).forEach(k => {
-            const key = k as CategoryType;
-            if (!parsed.config.categories[key] || parsed.config.categories[key].length === 0) {
-              parsed.config.categories[key] = DEFAULT_CATEGORY_MAP[key];
-            }
-          });
+          // Ensure applications exists
+          if (!parsed.config.applications || parsed.config.applications.length === 0) {
+            parsed.config.applications = ['BRUBANK', 'SANTANDER RIO', 'MERCADO PAGO', 'GALICIA', 'UALA', 'MACRO', 'PERSONAL PAY', 'BBVA'];
+          }
         }
         return parsed;
       } catch (e) {
@@ -93,7 +108,8 @@ const App: React.FC = () => {
       config: {
         currency: '$',
         userName: 'Usuario',
-        categories: DEFAULT_CATEGORY_MAP
+        categories: DEFAULT_CATEGORY_MAP,
+        applications: ['BRUBANK', 'SANTANDER RIO', 'MERCADO PAGO', 'GALICIA', 'UALA', 'MACRO', 'PERSONAL PAY', 'BBVA']
       }
     };
   });
@@ -110,6 +126,16 @@ const App: React.FC = () => {
     }
     return 'dashboard';
   });
+
+  // --- NAVIGATION STATE ---
+  const [navigationParams, setNavigationParams] = useState<any>(null);
+
+  const navigate = (tab: 'dashboard' | 'presupuesto' | 'tarjetas' | 'metas' | 'config' | 'admin' | 'annual' | 'party', params?: any) => {
+    setActiveTab(tab);
+    if (params) {
+      setNavigationParams(params);
+    }
+  };
   const [editingEntry, setEditingEntry] = useState<BudgetEntry | null>(null);
   const [editingGoal, setEditingGoal] = useState<SavingsGoal | null>(null);
   const [editingInstallment, setEditingInstallment] = useState<InstallmentPurchase | null>(null);
@@ -119,6 +145,8 @@ const App: React.FC = () => {
 
   // --- EXPANDED ROWS STATE ---
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  const [selectedUpdate, setSelectedUpdate] = useState<AppUpdate | null>(null);
 
   // --- PRIVACY MODE ---
   const [privacyMode, setPrivacyMode] = useState(false);
@@ -134,6 +162,11 @@ const App: React.FC = () => {
   // --- PENDING INVITES STATE ---
   const [pendingInvitesCount, setPendingInvitesCount] = useState(0);
 
+  // --- PARTY STATE ---
+  const [sharedPlans, setSharedPlans] = useState<any[]>([]);
+  const [groupExpenses, setGroupExpenses] = useState<any[]>([]);
+  const [partyMembers, setPartyMembers] = useState<Record<string, Record<string, string>>>({}); // PartyID -> ID -> Name map
+
   // --- SYNC WITH DB ---
   useEffect(() => {
     if (!user) return;
@@ -146,9 +179,103 @@ const App: React.FC = () => {
         // Fetch pending invites
         try {
           const invites = await api.getInvitations();
-          setPendingInvitesCount(invites.length);
+          setPendingInvitesCount((invites as any).length || 0);
         } catch (e) {
           console.error("Error fetching invites", e);
+        }
+
+        // --- FETCH SHARED INSTALLMENTS (NEW) ---
+        try {
+          const parties = await api.getParties();
+          const allPlans: any[] = [];
+          const allGroupExpenses: any[] = [];
+
+          // Store names PER PARTY to support different nicknames in different groups
+          // Record<PartyID, Record<MemberID|UserID, Name>>
+          const partyMemberMap: Record<string, Record<string, string>> = {};
+          const globalUserMap: Record<string, string> = {};
+
+          // Fetch users for generic naming (optimistic)
+          try {
+            const users = await api.getPublicUsers();
+            if (Array.isArray(users)) {
+              users.forEach((u: any) => globalUserMap[u.id] = u.firstName || u.username);
+            }
+          } catch (e) { console.warn("Could not fetch global users for naming", e); }
+
+          // Iterate parties to get nicknames and plans
+          for (const party of (parties as any[])) {
+            partyMemberMap[party.id] = { ...globalUserMap }; // Start with global names
+
+            // Get Nicknames & Details (for Guests)
+            try {
+              const [nicknames, details] = await Promise.all([
+                api.getNicknames(party.id).catch(() => ({})),
+                api.getPartyDetails(party.id).catch(() => (null))
+              ]);
+
+              // 2. Map Guest/Member Names (Member ID -> Guest Name / User Name)
+              // API returns { members: [...] } or { members: { results: [...] } }
+              const membersList: any[] = details ? (Array.isArray((details as any).members) ? (details as any).members : ((details as any).members?.results || [])) : [];
+
+              const userIdToMemberId: Record<string, string> = {};
+
+              membersList.forEach((m: any) => {
+                // Track relationship for nickname mapping
+                if (m.user_id) userIdToMemberId[m.user_id] = m.id;
+
+                // Basic Name Resolution (Priority: GuestName -> FirstName -> Username)
+                const name = m.guest_name || m.firstName || m.username || m.email || m.invited_email;
+                if (name) {
+                  const cleanName = String(name).replace(/0+$/, '');
+                  partyMemberMap[party.id][m.id] = cleanName; // Map Member ID to Name
+                  if (m.user_id) partyMemberMap[party.id][m.user_id] = cleanName; // Map User ID to Name
+                }
+
+                // CRITICAL: Map UserID -> MemberID relationship specifically for this party
+                if (m.user_id) {
+                  partyMemberMap[party.id][`uid_${m.user_id}`] = m.id;
+                }
+              });
+
+              // 1. Map Nicknames (Overwrite Basic Names)
+              if (nicknames && typeof nicknames === 'object') {
+                Object.entries(nicknames).forEach(([uid, nick]) => {
+                  if (typeof nick === 'string') {
+                    // Map User ID
+                    partyMemberMap[party.id][uid] = nick;
+                    // Also Map Member ID if known
+                    if (userIdToMemberId[uid]) {
+                      partyMemberMap[party.id][userIdToMemberId[uid]] = nick;
+                    }
+                  }
+                });
+              }
+
+            } catch (e) { }
+
+            // Get Plans
+            try {
+              const plans = await api.getInstallmentPlans(party.id);
+              if (Array.isArray(plans)) {
+                allPlans.push(...plans.map(p => ({ ...p, partyId: party.id })));
+              }
+            } catch (e) { console.error(`Error fetching plans for party ${party.id}`, e); }
+
+            // Get One-off Expenses (New)
+            try {
+              const details: any = await api.getPartyDetails(party.id);
+              if (details && Array.isArray(details.expenses)) {
+                const partyExps = details.expenses.map((exp: any) => ({ ...exp, partyId: party.id }));
+                allGroupExpenses.push(...partyExps);
+              }
+            } catch (e) { console.error(`Error fetching expenses for party ${party.id}`, e); }
+          }
+          setSharedPlans(allPlans);
+          setGroupExpenses(allGroupExpenses);
+          setPartyMembers(partyMemberMap);
+        } catch (e) {
+          console.error("Error fetching party data", e);
         }
 
         if (data) {
@@ -182,23 +309,32 @@ const App: React.FC = () => {
                 });
               }
 
+              // Ensure applications has defaults if empty After merge
+              if (!mergedConfig.applications || mergedConfig.applications.length === 0) {
+                mergedConfig.applications = ['BRUBANK', 'SANTANDER RIO', 'MERCADO PAGO', 'GALICIA', 'UALA', 'MACRO', 'PERSONAL PAY', 'BBVA'];
+              }
+              
               return {
                 ...prev,
-                budgets: newBudgets,
-                goals: data.goals,
-                installmentPurchases: data.installments,
-                categoryBudgets: budgetsMap,
-                config: mergedConfig
+                budgets: { ...prev.budgets, ...newBudgets },
+                goals: data.goals || prev.goals,
+                installmentPurchases: data.installments || prev.installmentPurchases,
+                config: mergedConfig,
+                categoryBudgets: { ...prev.categoryBudgets, ...budgetsMap }
               };
             });
           } else {
             // DB vacío, migrar datos locales si existen
-            Object.values(state.budgets).forEach(b => {
-              b.entries.forEach(e => api.saveEntry(e));
-            });
-            state.goals.forEach(g => api.saveGoal(g));
-            state.installmentPurchases.forEach(i => api.saveInstallment(i));
-            api.saveConfig(state.config);
+            // ORDEN CRÍTICO: 1. Config, 2. Metas (para FK de entries), 3. Cuotas, 4. Entradas
+            await api.saveConfig(state.config);
+            for (const g of state.goals) { await api.saveGoal(g); }
+            for (const i of state.installmentPurchases) { await api.saveInstallment(i); }
+
+            for (const b of Object.values(state.budgets)) {
+              for (const e of b.entries) {
+                await api.saveEntry(e);
+              }
+            }
           }
         }
       } catch (error) {
@@ -236,170 +372,333 @@ const App: React.FC = () => {
     return state.currentMonth.split('-')[1];
   }, [state.currentMonth, activeTab]);
 
+  // --- STATE FOR UNDO TOAST ---
+  const [undoToast, setUndoToast] = useState<{
+    entry: BudgetEntry | null;
+    timeoutId: NodeJS.Timeout | null;
+    timeLeft: number;
+  }>({ entry: null, timeoutId: null, timeLeft: 0 });
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (undoToast.entry && undoToast.timeLeft > 0) {
+      interval = setInterval(() => {
+        setUndoToast(prev => ({ ...prev, timeLeft: prev.timeLeft - 1 }));
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [undoToast.entry, undoToast.timeLeft]);
+
   // --- CÁLCULOS DINÁMICOS ---
-  const currentBudgetEntries = useMemo(() => {
-    const manualEntries = state.budgets[state.currentMonth]?.entries || [];
+  // --- CALCULOS DINÁMICOS OPTIMIZADOS (Punto 2) ---
+  // 1. GASTOS MANUALES BASE (Rápido, se ejecuta solo al modificar manuales)
+  const manualEntriesData = useMemo(() => {
+    if (!user) return { manualOtherEntries: [], manualCreditEntries: [], effectiveManualEntryIds: new Set<string>(), savedCardOrders: new Map<string, number>(), savedCardStatuses: new Map<string, TransactionStatus>() };
+    const effectiveManualEntries = state.budgets[state.currentMonth]?.entries || [];
+    const effectiveManualEntryIds = new Set(effectiveManualEntries.map(e => e.id));
 
-    // Crear un Set con los IDs de las entradas manuales para evitar duplicados
-    const manualEntryIds = new Set(manualEntries.map(e => e.id));
-
-    // 1. Extraer orden guardado de las agregaciones de tarjetas
     const savedCardOrders = new Map<string, number>();
-    manualEntries.forEach(e => {
-      if (e.id.startsWith('card-agg-') && e.order !== undefined) {
-        savedCardOrders.set(e.id, e.order);
+    const savedCardStatuses = new Map<string, TransactionStatus>();
+    effectiveManualEntries.forEach(e => {
+      if (e.id.startsWith('card-agg-')) {
+        if (e.order !== undefined) savedCardOrders.set(e.id, e.order);
+        if (e.status) savedCardStatuses.set(e.id, e.status);
       }
     });
 
-    // Filtrar entradas activas (no borradas)
-    // Excluir agregaciones existentes para regenerarlas
-    const activeManualEntries = manualEntries.filter(e => !e.deleted && !e.id.startsWith('card-agg-'));
-
-    // Separar manuales: 
-    // - manualOtherEntries: Todo lo que NO es crédito, O lo que es crédito pero es INGRESO (para que aparezca en Ingresos)
+    const activeManualEntries = effectiveManualEntries.filter(e => !e.deleted && !e.id.startsWith('card-agg-'));
     const manualOtherEntries = activeManualEntries.filter(e =>
       e.paymentMethod !== PaymentMethod.CREDIT || e.category === CategoryType.INCOME
     );
-
-    // - manualCreditEntries: Todo lo que es crédito (incluyendo ingresos, para agregarlos al detalle de la tarjeta)
     const manualCreditEntries = activeManualEntries.filter(e => e.paymentMethod === PaymentMethod.CREDIT);
 
-    // Generar cuotas automáticas para el mes actual
-    const installmentEntries: BudgetEntry[] = [];
+    return { manualOtherEntries, manualCreditEntries, effectiveManualEntryIds, savedCardOrders, savedCardStatuses };
+  }, [state.budgets, state.currentMonth, user]);
 
-    // Estructura de acumulación: Clave = CardName + Category
-    const accumulatedByCardAndCat: Record<string, {
-      total: number,
-      items: BudgetEntry[],
-      cardName: string,
-      category: CategoryType
-    }> = {};
+  // 2. CUOTAS Y TARJETAS VIRTUALES BASE (Pesado, se calcula poco)
+  const installmentVirtuals = useMemo(() => {
+    const virtuals: BudgetEntry[] = [];
+    if (!user) return virtuals;
 
-    // Helper para acumular
-    const addToAccumulator = (entry: BudgetEntry, cardName: string) => {
-      // Usar la categoría de la entrada, excepto para ingresos que van al grupo de Variables (o donde corresponda)
-      // para visualizarlos junto con los consumos, pero SIN sumar al total de gastos.
-      // Si es ingreso, lo metemos en VARIABLE_EXPENSE por defecto para que se vea en el detalle de la tarjeta.
-      const targetCategory = entry.category === CategoryType.INCOME ? CategoryType.VARIABLE_EXPENSE : entry.category;
-
-      const normalizedCardName = cardName.trim().toUpperCase();
-      const key = `${normalizedCardName}-${targetCategory}`;
-
-      if (!accumulatedByCardAndCat[key]) {
-        accumulatedByCardAndCat[key] = {
-          total: 0,
-          items: [],
-          cardName: cardName, // Keep the first encountered casing for display, or could normalize 
-          category: targetCategory
-        };
-      }
-
-      accumulatedByCardAndCat[key].items.push(entry);
-
-      // SOLO sumamos al total si NO es ingreso. 
-      // Si es ingreso, no restamos ni sumamos aquí porque ya está contabilizado en manualOtherEntries como ingreso positivo.
-      // Si restáramos aquí, duplicaríamos el beneficio en el flujo neto (Ingreso + Reducción de Gasto).
-      if (entry.category !== CategoryType.INCOME) {
-        accumulatedByCardAndCat[key].total += entry.amount;
-      }
-    };
-
-    // Procesar Cuotas (Installments)
     state.installmentPurchases.forEach(p => {
       const [startYear, startMonth] = p.startDate.split('-').map(Number);
       const [currYear, currMonth] = state.currentMonth.split('-').map(Number);
-
       const totalMonthsPassed = (currYear - startYear) * 12 + (currMonth - startMonth);
 
       if (totalMonthsPassed >= 0 && totalMonthsPassed < p.installments) {
         const generatedId = `inst-${p.id}-${state.currentMonth}`;
-
-        // Si ya existe una entrada manual con este ID, NO la generamos de nuevo
-        if (manualEntryIds.has(generatedId)) return;
-
         const amount = p.totalAmount / p.installments;
         const entry: BudgetEntry = {
           id: generatedId,
           name: `${p.name} (Cuota ${totalMonthsPassed + 1}/${p.installments})`,
           amount: amount,
-          category: p.category, // Respetar categoría original (Fijo/Variable)
+          category: p.category,
           tag: p.tag,
           date: state.currentMonth + '-01',
           status: TransactionStatus.PENDING,
           paymentMethod: PaymentMethod.CREDIT,
           installmentRef: p.id,
           currentInstallment: totalMonthsPassed + 1,
-          totalInstallments: p.installments
+          totalInstallments: p.installments,
+          linkedIncomeId: p.linkedIncomeId
         };
-
         let targetCard = p.cardName;
         if (!targetCard) {
-          targetCard = (state.config.creditCards && state.config.creditCards.length === 1)
-            ? state.config.creditCards[0]
-            : (Object.keys(accumulatedByCardAndCat).length > 0 ? accumulatedByCardAndCat[Object.keys(accumulatedByCardAndCat)[0]].cardName : 'Otros');
+           targetCard = (state.config.creditCards && state.config.creditCards.length > 0) ? state.config.creditCards[0] : 'Otros';
+        }
+        virtuals.push({ ...entry, cardName: targetCard });
+      }
+    });
+    return virtuals;
+  }, [state.installmentPurchases, state.currentMonth, state.config.creditCards, user]);
+
+  // 3. PLANES COMPARTIDOS BASE (Cálculo matemático complejo, corre poco)
+  const sharedPlansVirtuals = useMemo(() => {
+    const virtuals: BudgetEntry[] = [];
+    if (!user || !sharedPlans || sharedPlans.length === 0) return virtuals;
+    const [currYear, currMonth] = state.currentMonth.split('-').map(Number);
+
+    sharedPlans.forEach(plan => {
+      const [startYear, startMonth] = plan.start_date.split('-').map(Number);
+      const participants = typeof plan.participants === 'string'
+        ? JSON.parse(plan.participants)
+        : (plan.participants || [plan.debtor_id]);
+
+      let isActive = false;
+      let currentInstallmentNum = 0;
+
+      for (let i = 0; i < plan.installments_count; i++) {
+        let m = startMonth + i;
+        let y = startYear;
+        while (m > 12) { m -= 12; y++; }
+        if (m === currMonth && y === currYear) {
+          isActive = true;
+          currentInstallmentNum = i + 1;
+          break;
+        }
+      }
+
+      if (isActive) {
+        const rate = plan.exchange_rate || 1;
+        const isUSD = plan.currency === 'USD';
+        const installmentAmountNative = plan.installment_amount;
+        const installmentAmountARS = isUSD ? installmentAmountNative * rate : installmentAmountNative;
+
+        const myName = user?.firstName || user?.username || 'Yo';
+        const partyMap = partyMembers[plan.partyId] || {};
+        const payerName = partyMap[plan.payer_id] || 'Miembro';
+        const myMemberId = user ? partyMap[`uid_${user.id}`] : undefined;
+
+        const isPayerMe = user && ((plan.payer_id === user.id) || (myMemberId && plan.payer_id === myMemberId) || (partyMap[user.id] === payerName) || (payerName.toLowerCase() === myName.toLowerCase()));
+
+        let isParticipantMe = user && (participants.includes(user.id) || (myMemberId && participants.includes(myMemberId)));
+        if (user && !isParticipantMe) {
+          isParticipantMe = participants.some((p: string) => {
+            const pName = partyMap[p];
+            return pName && (pName === partyMap[user.id] || pName.toLowerCase() === myName.toLowerCase());
+          });
         }
 
-        addToAccumulator(entry, targetCard);
+        if (isPayerMe) {
+          participants.forEach((pId: string) => {
+            if (!user || pId === user.id || pId === myMemberId || partyMap[pId] === myName || partyMap[pId] === partyMap[user.id]) return;
+            const debtorName = partyMap[pId] || 'Miembro';
+            const vId = `shared-${plan.id}-${pId}-${state.currentMonth}`;
+            const expenseDate = plan.start_date || `${state.currentMonth}-01`;
+            
+            virtuals.push({
+              id: vId,
+              name: `${plan.description} (Cobro a ${debtorName})`,
+              amount: -installmentAmountARS,
+              category: CategoryType.SHARED_EXPENSE,
+              tag: `A COBRAR el ${formatDateDDMMYYYY(expenseDate)}`, // Keeping unformatted for simplicity
+              date: expenseDate,
+              status: TransactionStatus.PENDING,
+              paymentMethod: PaymentMethod.TRANSFER,
+              currentInstallment: currentInstallmentNum,
+              totalInstallments: plan.installments_count,
+              installmentRef: plan.id,
+              currency: plan.currency,
+              originalAmount: installmentAmountNative,
+              exchangeRateActual: rate
+            });
+          });
+        } else if (isParticipantMe) {
+          const vId = `shared-${plan.id}-${user?.id || 'null'}-${state.currentMonth}`;
+          const expenseDate = plan.start_date || `${state.currentMonth}-01`;
+            
+          virtuals.push({
+            id: vId,
+            name: `${plan.description} (Pago a ${payerName})`,
+            amount: installmentAmountARS,
+            category: CategoryType.SHARED_EXPENSE,
+            tag: `A PAGAR el ${formatDateDDMMYYYY(expenseDate)}`,
+            date: expenseDate,
+            status: TransactionStatus.PENDING,
+            paymentMethod: PaymentMethod.TRANSFER,
+            currentInstallment: currentInstallmentNum,
+            totalInstallments: plan.installments_count,
+            installmentRef: plan.id,
+            currency: plan.currency,
+            originalAmount: installmentAmountNative,
+            exchangeRateActual: rate
+          });
+        }
       }
     });
 
-    // Procesar Entradas Manuales de Crédito
-    manualCreditEntries.forEach(e => {
-      let targetCard = e.cardName;
-      if (!targetCard) {
-        targetCard = (state.config.creditCards && state.config.creditCards.length === 1)
-          ? state.config.creditCards[0]
-          : 'Otros'; // Default a Otros si no se puede inferir
-      }
-      addToAccumulator(e, targetCard);
-    });
+    return virtuals;
+  }, [sharedPlans, state.currentMonth, partyMembers, user]);
 
-    // Generar Entradas Agrupadas
+  // 4. GASTOS GRUPALES DIRECTOS BASE
+  const groupDirectVirtuals = useMemo(() => {
+    const virtuals: BudgetEntry[] = [];
+    if (!groupExpenses || groupExpenses.length === 0 || !user) return virtuals;
+
+    groupExpenses.forEach(exp => {
+      const expMonth = exp.date ? exp.date.substring(0, 7) : '';
+      if (expMonth === state.currentMonth) {
+        const partyMap = partyMembers[exp.partyId] || {};
+        const myMemberId = user ? partyMap[`uid_${user.id}`] : undefined;
+        const isPayerMe = user && (exp.payer_id === user.id || (myMemberId && exp.payer_id === myMemberId));
+        const payerName = isPayerMe ? 'Yo' : (partyMap[exp.payer_id] || 'Miembro');
+
+        virtuals.push({
+          id: `group-exp-${exp.id}`,
+          name: `${exp.description} (Pagó ${payerName})`,
+          amount: exp.amount,
+          category: CategoryType.SHARED_EXPENSE,
+          tag: 'Gasto de Grupo',
+          date: exp.date,
+          status: TransactionStatus.PAID,
+          paymentMethod: PaymentMethod.TRANSFER,
+          is_provisional: false,
+          partyId: exp.partyId
+        });
+      }
+    });
+    return virtuals;
+  }, [groupExpenses, state.currentMonth, partyMembers, user]);
+
+  // 5. COMBINADOR FINAL SUPER LIGERO
+  const currentBudgetEntries = useMemo(() => {
+    if (!user) return [];
+    const { manualOtherEntries, manualCreditEntries, effectiveManualEntryIds, savedCardOrders, savedCardStatuses } = manualEntriesData;
+
+    // Filtrar los que ya se cobraron/pagaron manuales
+    const effectiveSharedVirtuals = sharedPlansVirtuals.filter(v => !effectiveManualEntryIds.has(v.id));
+    
+    const virtualIncomeFromShared: BudgetEntry[] = [];
+    const totalSharedBalance = effectiveSharedVirtuals.reduce((sum, entry) => sum + entry.amount, 0);
+    if (totalSharedBalance < 0) {
+      const incomeId = `income-from-shared-total-${state.currentMonth}`;
+      if (!effectiveManualEntryIds.has(incomeId)) {
+        const latestDate = effectiveSharedVirtuals.length > 0
+          ? effectiveSharedVirtuals.reduce((latest, entry) => entry.date > latest ? entry.date : latest, effectiveSharedVirtuals[0].date)
+          : `${state.currentMonth}-01`;
+
+        virtualIncomeFromShared.push({
+          id: incomeId,
+          name: `Gastos Compartidos del Período`,
+          amount: Math.abs(totalSharedBalance),
+          category: CategoryType.INCOME,
+          tag: `Ingreso por Gasto Compartido`,
+          date: latestDate,
+          status: TransactionStatus.PENDING,
+          paymentMethod: PaymentMethod.TRANSFER,
+          description: `Balance neto positivo de gastos compartidos`,
+          isAutoGenerated: true,
+          linkedSharedExpense: 'net-balance'
+        });
+      }
+    }
+
+    const effectiveInstallmentVirtuals = installmentVirtuals.filter(v => !effectiveManualEntryIds.has(v.id));
+    const accumulatedByCardAndCat: Record<string, any> = {};
+
+    const addToAccumulator = (entry: BudgetEntry, cardName: string) => {
+      const targetCategory = entry.category === CategoryType.INCOME ? CategoryType.VARIABLE_EXPENSE : entry.category;
+      const normalizedCardName = cardName.trim().toUpperCase();
+      const key = `${normalizedCardName}-${targetCategory}`;
+      if (!accumulatedByCardAndCat[key]) {
+        accumulatedByCardAndCat[key] = { total: 0, items: [], cardName, category: targetCategory };
+      }
+      accumulatedByCardAndCat[key].items.push(entry);
+      if (entry.category !== CategoryType.INCOME) {
+        accumulatedByCardAndCat[key].total += entry.amount;
+      }
+    };
+
+    effectiveInstallmentVirtuals.forEach(e => addToAccumulator(e, e.cardName || 'Otros'));
+    manualCreditEntries.forEach(e => addToAccumulator(e, e.cardName || (state.config.creditCards && state.config.creditCards.length === 1 ? state.config.creditCards[0] : 'Otros')));
+
+    const installmentEntries: BudgetEntry[] = [];
     Object.entries(accumulatedByCardAndCat).forEach(([key, data]) => {
-      // Ordenar items
-      data.items.sort((a, b) => {
+      data.items.sort((a: any, b: any) => {
         const remA = a.totalInstallments ? (a.totalInstallments - (a.currentInstallment || 0)) : 999;
         const remB = b.totalInstallments ? (b.totalInstallments - (b.currentInstallment || 0)) : 999;
         return remA - remB;
       });
-
-      const aggId = `card-agg-${key}-${state.currentMonth}`;
-
+      const aggId = `card-agg-${user?.id || 'null'}-${key}-${state.currentMonth}`;
       const categoryLabel = data.category === CategoryType.FIXED_EXPENSE ? ' (Fijos)' : '';
-
       installmentEntries.push({
         id: aggId,
         name: data.cardName === 'Otros' ? `Consumo Tarjeta${categoryLabel}` : `Consumo ${data.cardName}${categoryLabel}`,
         amount: data.total,
-        category: data.category, // Respetar categoría (Fijo o Variable)
+        category: data.category,
         tag: 'Tarjeta de Crédito',
         order: savedCardOrders.get(aggId),
         date: state.currentMonth + '-01',
-        status: TransactionStatus.PENDING,
+        status: savedCardStatuses.get(aggId) || TransactionStatus.PENDING,
         paymentMethod: PaymentMethod.CREDIT,
         subEntries: data.items,
         cardName: data.cardName
       });
     });
 
-    return [...manualOtherEntries, ...installmentEntries];
-  }, [state.budgets, state.currentMonth, state.installmentPurchases, state.config.creditCards]);
+    return [...manualOtherEntries, ...installmentEntries, ...effectiveSharedVirtuals, ...virtualIncomeFromShared, ...groupDirectVirtuals];
+  }, [manualEntriesData, sharedPlansVirtuals, installmentVirtuals, groupDirectVirtuals, state.currentMonth, state.config.creditCards, user]);
+
+  // Flatten all entries from all months for lookup purposes (linking labels, etc.)
+  const allEntries = useMemo(() => {
+    const flatMap = new Map<string, BudgetEntry>();
+    
+    // 1. Process Database Entries
+    Object.values(state.budgets).forEach(b => {
+      if (b.entries) {
+        b.entries.forEach(e => flatMap.set(e.id, e));
+      }
+    });
+
+    return Array.from(flatMap.values());
+  }, [state.budgets]);
 
   const confirmedTotals = useMemo(() => {
+    const viewMode = state.config.viewMode || 'monthly';
     return currentBudgetEntries
       .filter(e => !e.is_provisional)
+      .filter(e => {
+        if (viewMode === 'biweekly') return e.viewType === 'biweekly';
+        return !e.viewType || e.viewType === 'monthly';
+      })
       .reduce((acc, e) => {
         acc[e.category] = (acc[e.category] || 0) + e.amount;
         return acc;
       }, {} as Record<CategoryType, number>);
-  }, [currentBudgetEntries]);
+  }, [currentBudgetEntries, state.config.viewMode]);
 
   const projectedTotals = useMemo(() => {
-    return currentBudgetEntries.reduce((acc, e) => {
-      acc[e.category] = (acc[e.category] || 0) + e.amount;
-      return acc;
-    }, {} as Record<CategoryType, number>);
-  }, [currentBudgetEntries]);
+    const viewMode = state.config.viewMode || 'monthly';
+    return currentBudgetEntries
+      .filter(e => {
+        if (viewMode === 'biweekly') return e.viewType === 'biweekly';
+        return !e.viewType || e.viewType === 'monthly';
+      })
+      .reduce((acc, e) => {
+        acc[e.category] = (acc[e.category] || 0) + e.amount;
+        return acc;
+      }, {} as Record<CategoryType, number>);
+  }, [currentBudgetEntries, state.config.viewMode]);
 
   // Compatibility alias for existing components that expect 'currentTotals'
   const currentTotals = confirmedTotals;
@@ -455,19 +754,19 @@ const App: React.FC = () => {
       let inc = 0;
       let exp = 0;
 
-      if (budget) {
-        budget.entries.forEach(e => {
-          if (e.category === CategoryType.INCOME) inc += e.amount;
-          else if (e.category !== CategoryType.SAVINGS) exp += e.amount;
-        });
-      }
-
-      // Si es el mes actual y no hay datos históricos, usar currentTotals
-      if (i === 0 && !budget) {
+      if (mStr === state.currentMonth) {
+        // ALWAYS use currentTotals for the current month to correctly include dynamic installments 
+        // and safely ignore saved card-agg items in raw DB entries.
         inc = currentTotals[CategoryType.INCOME] || 0;
         exp = (currentTotals[CategoryType.FIXED_EXPENSE] || 0) +
           (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) +
           (currentTotals[CategoryType.DEBT] || 0);
+      } else if (budget) {
+        budget.entries.forEach(e => {
+          if (e.id.startsWith('card-agg-')) return; // Ignore aggregations saved in DB
+          if (e.category === CategoryType.INCOME) inc += e.amount;
+          else if (e.category !== CategoryType.SAVINGS) exp += e.amount;
+        });
       }
 
       data.push({
@@ -479,181 +778,265 @@ const App: React.FC = () => {
     return data;
   }, [state.budgets, state.currentMonth, currentTotals]);
 
-  // --- HANDLERS ---
   const saveEntry = async (entry: BudgetEntry) => {
     try {
+      const entryMonth = entry.month_year || entry.date.substring(0, 7);
+
+      // Save directly to API
       await api.saveEntry(entry);
 
-      // Calcular actualizaciones de metas antes de actualizar el estado
-      const oldEntry = state.budgets[state.currentMonth]?.entries.find(e => e.id === entry.id);
-      const goalsToUpdate = new Map<string, SavingsGoal>();
-
-      const getGoal = (id: string) => {
-        if (goalsToUpdate.has(id)) return goalsToUpdate.get(id)!;
-        const g = state.goals.find(g => g.id === id);
-        return g ? { ...g } : null;
-      };
-
-      // Revertir impacto de la entrada anterior
-      if (oldEntry && oldEntry.goalId) {
-        const g = getGoal(oldEntry.goalId);
-        if (g) {
-          g.currentAmount = Math.max(0, g.currentAmount - oldEntry.amount);
-          goalsToUpdate.set(g.id, g);
-        }
-      }
-
-      // Aplicar impacto de la nueva entrada
-      if (entry.goalId) {
-        const g = getGoal(entry.goalId);
-        if (g) {
-          g.currentAmount += entry.amount;
-          goalsToUpdate.set(g.id, g);
-        }
-      }
-
+      // Update local state directly
       setState(prev => {
-        const monthData = prev.budgets[prev.currentMonth] || { month: prev.currentMonth, entries: [] };
-        const exists = monthData.entries.find(e => e.id === entry.id);
-        const newEntries = exists
-          ? monthData.entries.map(e => e.id === entry.id ? entry : e)
-          : [...monthData.entries, entry];
+        const monthBudget = prev.budgets[entryMonth] || { month: entryMonth, entries: [] };
+        const existingEntries = monthBudget.entries || [];
+        const existingIndex = existingEntries.findIndex(e => e.id === entry.id);
 
-        const newGoals = prev.goals.map(g => goalsToUpdate.has(g.id) ? goalsToUpdate.get(g.id)! : g);
+        let updatedEntries;
+        if (existingIndex >= 0) {
+          updatedEntries = [...existingEntries];
+          updatedEntries[existingIndex] = entry;
+        } else {
+          updatedEntries = [...existingEntries, entry];
+        }
 
         return {
           ...prev,
-          budgets: { ...prev.budgets, [prev.currentMonth]: { ...monthData, entries: newEntries } },
-          goals: newGoals
+          budgets: {
+            ...prev.budgets,
+            [entryMonth]: {
+              ...monthBudget,
+              entries: updatedEntries
+            }
+          }
         };
       });
-      setEditingEntry(null);
-      goalsToUpdate.forEach(g => api.saveGoal(g));
 
+      setEditingEntry(null);
     } catch (e: any) {
       console.error("Failed to save entry:", e);
-      alert("Error al guardar el movimiento: " + (e.message || "Error desconocido"));
+      alert("Error al guardar el movimiento.");
     }
+  };
+
+  // Aplica una cotización (BBVA Compra / proxy de Brubank) a TODOS los movimientos USD
+  // del mes visible. Recalcula el total en ARS = originalAmount * rate y persiste cada uno.
+  const handleApplyDolarRate = async (rate: number): Promise<{ updatedCount: number }> => {
+    const month = state.currentMonth;
+    const monthBudget = state.budgets[month];
+    if (!monthBudget?.entries?.length) return { updatedCount: 0 };
+
+    const targets = monthBudget.entries.filter(e =>
+      e.currency === 'USD' &&
+      typeof e.originalAmount === 'number' &&
+      (e.originalAmount as number) > 0 &&
+      !e.deleted &&
+      !e.id.startsWith('card-agg-') &&
+      !e.id.startsWith('inst-') &&
+      !e.id.startsWith('shared-') &&
+      !e.id.startsWith('virt-')
+    );
+
+    if (targets.length === 0) return { updatedCount: 0 };
+
+    const updates: BudgetEntry[] = targets.map(e => ({
+      ...e,
+      exchangeRateActual: rate,
+      amount: (e.originalAmount as number) * rate,
+    }));
+
+    const results = await Promise.allSettled(updates.map(u => api.saveEntry(u)));
+    const okIds = new Set<string>();
+    results.forEach((r, i) => { if (r.status === 'fulfilled') okIds.add(updates[i].id); });
+
+    if (okIds.size > 0) {
+      const updatedMap = new Map(updates.filter(u => okIds.has(u.id)).map(u => [u.id, u]));
+      setState(prev => {
+        const mb = prev.budgets[month];
+        if (!mb) return prev;
+        return {
+          ...prev,
+          budgets: {
+            ...prev.budgets,
+            [month]: {
+              ...mb,
+              entries: mb.entries.map(e => updatedMap.get(e.id) || e),
+            },
+          },
+        };
+      });
+    }
+
+    if (okIds.size < updates.length) {
+      console.error('[handleApplyDolarRate] Algunos saves fallaron:', results.filter(r => r.status === 'rejected'));
+    }
+
+    return { updatedCount: okIds.size };
+  };
+
+  const undoDelete = () => {
+    if (!undoToast.entry) return;
+    
+    // Cancel the pending API deletion
+    if (undoToast.timeoutId) clearTimeout(undoToast.timeoutId);
+    
+    // Restore entry in local state
+    const entryToRestore = undoToast.entry;
+    const entryMonth = entryToRestore.month_year || entryToRestore.date.substring(0, 7);
+    
+    setState(prev => {
+      const monthBudget = prev.budgets[entryMonth] || { month: entryMonth, entries: [] };
+      return {
+        ...prev,
+        budgets: {
+          ...prev.budgets,
+          [entryMonth]: {
+            ...monthBudget,
+            entries: [...monthBudget.entries, entryToRestore]
+          }
+        }
+      };
+    });
+    
+    setUndoToast({ entry: null, timeoutId: null, timeLeft: 0 });
   };
 
   const deleteEntry = (id: string) => {
-    const isGenerated = id.startsWith('inst-') || id.startsWith('card-agg-');
+    const isGenerated = id.startsWith('inst-') || id.startsWith('card-agg-') || id.startsWith('shared-');
 
-    // Helper function to find entry (recursive)
-    const findEntryRecursive = (entries: BudgetEntry[], targetId: string): BudgetEntry | undefined => {
-      for (const entry of entries) {
-        if (entry.id === targetId) return entry;
-        if (entry.subEntries) {
-          const found = findEntryRecursive(entry.subEntries, targetId);
-          if (found) return found;
+    if (isGenerated) {
+       // Virtual entries (like generated installments or aggregates) must be explicitly 
+       // saved as 'deleted: true' in the DB to remember they shouldn't show up.
+       const virtualEntries = currentBudgetEntries;
+       const findRecursive = (entries: BudgetEntry[]): BudgetEntry | undefined => {
+         for (const e of entries) {
+           if (e.id === id) return e;
+           if (e.subEntries) { const f = findRecursive(e.subEntries); if (f) return f; }
+         }
+         return undefined;
+       };
+       const item = findRecursive(virtualEntries);
+       
+       if (item) {
+         api.saveEntry({ ...item, deleted: true }).catch(e => console.error("Failed to soft-delete virtual entry", e));
+         
+         // Optimistically hide it by adding a "deleted: true" override in current month's explicit state
+         setState(prev => {
+            const tempMonthBudget = prev.budgets[state.currentMonth] || { month: state.currentMonth, entries: [] };
+            
+            // Si ya existe, lo actualiza, sino lo agrega al state.budgets para que compute arriba.
+            const existingEntries = tempMonthBudget.entries || [];
+            const existingIndex = existingEntries.findIndex(e => e.id === id);
+            let updatedEntries;
+            
+            if (existingIndex >= 0) {
+              updatedEntries = [...existingEntries];
+              updatedEntries[existingIndex] = { ...item, deleted: true };
+            } else {
+              updatedEntries = [...existingEntries, { ...item, deleted: true }];
+            }
+            
+            return {
+              ...prev,
+              budgets: {
+                ...prev.budgets,
+                [state.currentMonth]: {
+                  ...tempMonthBudget,
+                  entries: updatedEntries
+                }
+              }
+            };
+         });
+       }
+       return;
+    }
+
+    // Standard Entry Deletion (with Undo)
+    let entryToDelete: BudgetEntry | null = null;
+    let entryMonth = state.currentMonth;
+    
+    // Find entry in state
+    const currentMonthEntries = state.budgets[state.currentMonth]?.entries || [];
+    entryToDelete = currentMonthEntries.find(e => e.id === id) || null;
+    
+    if (!entryToDelete) {
+      for (const [month, budget] of Object.entries(state.budgets)) {
+        const found = budget.entries.find(e => e.id === id);
+        if (found) {
+          entryToDelete = found;
+          entryMonth = month;
+          break;
         }
-      }
-      return undefined;
-    };
-
-    // Actualizar metas si es necesario
-    // Use recursive find to locate the entry even if it's nested
-    const entryToDelete = findEntryRecursive(state.budgets[state.currentMonth]?.entries || [], id);
-
-    const goalsToUpdate = new Map<string, SavingsGoal>();
-
-    if (entryToDelete && entryToDelete.goalId) {
-      const g = state.goals.find(g => g.id === entryToDelete.goalId);
-      if (g) {
-        const updatedGoal = { ...g, currentAmount: Math.max(0, g.currentAmount - entryToDelete.amount) };
-        goalsToUpdate.set(g.id, updatedGoal);
       }
     }
 
+    if (!entryToDelete) return;
+
+    // 1. Optimistic UI delete
     setState(prev => {
-      const currentBudget = prev.budgets[prev.currentMonth] || { month: prev.currentMonth, entries: [] };
-      let newEntries;
-
-      if (isGenerated) {
-        // If it's a generated ID, we mark it as deleted. 
-        // We need to check if it exists in the persisted entries.
-        const existingEntry = currentBudget.entries.find(e => e.id === id);
-
-        if (existingEntry) {
-          // It's already in the DB/State, mark as deleted
-          newEntries = currentBudget.entries.map(e => e.id === id ? { ...e, deleted: true } : e);
-        } else {
-          // It's not in DB yet (dynamic), but we want to delete it.
-          // We need to find it in the CALCULATED currentBudgetEntries to get its data
-          // and add it to state as "deleted" so it doesn't show up next time.
-          const itemToDelete = findEntryRecursive(currentBudgetEntries, id);
-
-          if (itemToDelete) {
-            // We add it to the state explicitly marked as deleted
-            newEntries = [...currentBudget.entries, { ...itemToDelete, deleted: true }];
-          } else {
-            // Can't find it, nothing to do
-            newEntries = currentBudget.entries;
-          }
-        }
-      } else {
-        // Standard manual entry, just filter it out
-        newEntries = currentBudget.entries.filter(e => e.id !== id);
-      }
-
-      const newGoals = prev.goals.map(g => goalsToUpdate.has(g.id) ? goalsToUpdate.get(g.id)! : g);
-
+      const monthBudget = prev.budgets[entryMonth];
+      if (!monthBudget) return prev;
       return {
         ...prev,
         budgets: {
           ...prev.budgets,
-          [prev.currentMonth]: {
-            ...currentBudget,
-            entries: newEntries
+          [entryMonth]: {
+            ...monthBudget,
+            entries: monthBudget.entries.filter(e => e.id !== id)
           }
-        },
-        goals: newGoals
+        }
       };
     });
 
-    if (isGenerated) {
-      // Logic for generated items (like installments)
-      // Check if we need to call API to save this "deletion" state
-      const itemToDelete = findEntryRecursive(currentBudgetEntries, id);
-      if (itemToDelete) {
-        api.saveEntry({ ...itemToDelete, deleted: true });
+    // 2. Clear old toast if exists
+    if (undoToast.timeoutId) clearTimeout(undoToast.timeoutId);
+
+    // 3. Start timer for actual API delete
+    const timeoutId = setTimeout(async () => {
+      try {
+        await api.deleteEntry(id);
+      } catch (e) {
+        console.error("Failed to delete entry from API:", e);
       }
-    } else {
-      // Standard deletion
-      api.deleteEntry(id);
-    }
-    goalsToUpdate.forEach(g => api.saveGoal(g));
+      setUndoToast(prev => {
+         // Only clear if another delete hasn't overwritten the toast state
+         if (prev.timeoutId === timeoutId) {
+             return { entry: null, timeoutId: null, timeLeft: 0 };
+         }
+         return prev;
+      });
+    }, 5000);
+
+    // 4. Show Undo Toast
+    setUndoToast({ entry: entryToDelete, timeoutId, timeLeft: 5 });
   };
 
   const handleReorderEntries = (reorderedEntries: BudgetEntry[]) => {
+    // For reorder, we update STATE immediately
+    const entryMonth = state.currentMonth;
+    
     setState(prev => {
-      const monthData = prev.budgets[prev.currentMonth] || { month: prev.currentMonth, entries: [] };
-      const orderMap = new Map(reorderedEntries.map(e => [e.id, e.order]));
-
-      // 1. Update existing manual entries
-      const updatedManualEntries = monthData.entries.map(e => {
-        if (orderMap.has(e.id)) {
-          return { ...e, order: orderMap.get(e.id) };
-        }
-        return e;
+      const monthBudget = prev.budgets[entryMonth];
+      if (!monthBudget) return prev;
+      
+      const newEntries = monthBudget.entries.map(existing => {
+         const matchingReorder = reorderedEntries.find(r => r.id === existing.id);
+         return matchingReorder ? matchingReorder : existing;
       });
-
-      // 2. Identify new entries to materialize (generated entries that are now being reordered)
-      const existingIds = new Set(monthData.entries.map(e => e.id));
-      const entriesToMaterialize = reorderedEntries.filter(e => !existingIds.has(e.id));
-
+      
       return {
         ...prev,
         budgets: {
           ...prev.budgets,
-          [prev.currentMonth]: {
-            ...monthData,
-            entries: [...updatedManualEntries, ...entriesToMaterialize]
+          [entryMonth]: {
+            ...monthBudget,
+            entries: newEntries
           }
         }
       };
     });
-    reorderedEntries.forEach(entry => api.saveEntry(entry));
+
+    // Fire API updates in background
+    Promise.all(reorderedEntries.map(e => api.saveEntry(e))).catch(e => console.error("Reorder save failed", e));
   };
 
   const saveInstallment = (p: InstallmentPurchase) => {
@@ -695,7 +1078,7 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = async () => {
         const base64 = (reader.result as string).split(',')[1];
-        const result = await parseDocument(base64, file.type);
+        const result = await parseDocument(file);
 
         const newEntries: BudgetEntry[] = result.items.map(item => ({
           id: generateUUID(),
@@ -793,6 +1176,23 @@ const App: React.FC = () => {
     });
   };
 
+  // Compute currentYear and currentMonthNum from state.currentMonth
+
+
+  // Handlers for year/month changes
+  const handleYearChange = (year: string) => {
+    setState(prev => ({ ...prev, currentMonth: `${year}-${currentMonthNum}` }));
+  };
+
+  const handleMonthChange = (month: string) => {
+    if (month === 'annual') {
+      setActiveTab('annual');
+    } else {
+      if (activeTab === 'annual') setActiveTab('dashboard');
+      setState(prev => ({ ...prev, currentMonth: `${currentYear}-${month}` }));
+    }
+  };
+
   // --- ROUTING ---
   const currentPath = window.location.pathname;
   if (currentPath === '/privacy') return <PrivacyView />;
@@ -801,9 +1201,9 @@ const App: React.FC = () => {
   // Si no hay usuario, mostrar Landing o Login Manual
   if (!user) {
     if (currentPath === '/login-manual') {
-      return <Login onLogin={setUser} />;
+      return <Login onLogin={handleSetUser} />;
     }
-    return <LandingView onLogin={setUser} />;
+    return <LandingView onLogin={handleSetUser} />;
   }
 
   if (loadingData) {
@@ -817,86 +1217,77 @@ const App: React.FC = () => {
     );
   }
   // --- ADMIN BREADCRUMB ---
-  // --- APP BREADCRUMB ---
-  const adminBreadcrumb = (
-    <div className="bg-[#1e1e1e] rounded-lg border border-white/10 text-xs text-gray-400 p-2 font-mono flex items-center gap-1 select-all shadow-lg w-fit">
-      <span className="text-blue-400">Inicio</span>
-      {activeTab === 'dashboard' && <span className="text-purple-400"> &gt; Dashboard</span>}
-      {activeTab === 'party' && (
-        <>
-          <span>&gt;</span>
-          <span className="text-purple-400">Gastos en Grupo</span>
-          <span>&gt;</span>
-          <span className="text-white font-bold">Detalle de Grupo</span>
-        </>
-      )}
-      {activeTab === 'presupuesto' && <span className="text-purple-400"> &gt; Movimientos</span>}
-      {activeTab === 'annual' && <span className="text-purple-400"> &gt; Vista Anual</span>}
-      {activeTab === 'tarjetas' && <span className="text-purple-400"> &gt; Cuotas / Tarjetas</span>}
-      {activeTab === 'metas' && <span className="text-purple-400"> &gt; Metas</span>}
-      {activeTab === 'config' && <span className="text-purple-400"> &gt; Configuración</span>}
-      {activeTab === 'admin' && <span className="text-purple-400"> &gt; Admin Panel</span>}
-    </div>
-  );
+
 
   return (
-    <Layout
-      sidebarOpen={sidebarOpen}
-      setSidebarOpen={setSidebarOpen}
-      desktopSidebarOpen={desktopSidebarOpen}
-      setDesktopSidebarOpen={setDesktopSidebarOpen}
-      titlePrefix={APP_TITLE_PREFIX}
-      titleSuffix={APP_TITLE_SUFFIX}
-      sidebar={
-        <Sidebar
-          sidebarOpen={sidebarOpen}
-          setSidebarOpen={setSidebarOpen}
-          desktopSidebarOpen={desktopSidebarOpen}
-          setDesktopSidebarOpen={setDesktopSidebarOpen}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          user={user}
-          netFlow={netFlow}
-          projectedNetFlow={projectedNetFlow}
-          formatMoney={formatMoney}
-          onExport={handleExportExcel}
-          onLogout={handleLogout}
-        />
-      }
-      header={
-        <Header
-          currentYear={currentYear}
-          currentMonthNum={currentMonthNum}
-          onYearChange={(year) => setState(prev => ({ ...prev, currentMonth: `${year}-${state.currentMonth.split('-')[1]}` }))}
-          onMonthChange={(month) => {
-            if (month === 'annual') {
-              setActiveTab('annual');
-            } else {
-              if (activeTab === 'annual') setActiveTab('dashboard');
-              setState(prev => ({ ...prev, currentMonth: `${currentYear}-${month}` }));
-            }
-          }}
-          privacyMode={privacyMode}
-          setPrivacyMode={setPrivacyMode}
-          totalIncome={currentTotals[CategoryType.INCOME] || 0}
-          formatMoney={formatMoney}
-          user={user}
-          adminBreadcrumb={adminBreadcrumb}
-        />
-      }
-      modals={
-        <>
-          <InvitationModal />
-          {editingEntry && (
+    <>
+      <Layout
+        sidebarOpen={sidebarOpen}
+        setSidebarOpen={setSidebarOpen}
+        desktopSidebarOpen={desktopSidebarOpen}
+        setDesktopSidebarOpen={setDesktopSidebarOpen}
+        titlePrefix={APP_TITLE_PREFIX}
+        titleSuffix={APP_TITLE_SUFFIX}
+        currentYear={currentYear}
+        currentMonthNum={currentMonthNum}
+        onYearChange={handleYearChange}
+        onMonthChange={handleMonthChange}
+        sidebar={
+          <Sidebar
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            desktopSidebarOpen={desktopSidebarOpen}
+            setDesktopSidebarOpen={setDesktopSidebarOpen}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            user={user}
+            netFlow={netFlow}
+            projectedNetFlow={projectedNetFlow}
+            formatMoney={formatMoney}
+            onExport={handleExportExcel}
+            onLogout={handleLogout}
+          />
+        }
+        header={
+          <Header
+            currentYear={currentYear}
+            currentMonthNum={currentMonthNum}
+            onYearChange={handleYearChange}
+            onMonthChange={handleMonthChange}
+            privacyMode={privacyMode}
+            setPrivacyMode={setPrivacyMode}
+            totalIncome={currentTotals[CategoryType.INCOME] || 0}
+            formatMoney={formatMoney}
+            user={user}
+            onSelectUpdate={setSelectedUpdate}
+          />
+        }
+        modals={
+          <>
+            <InvitationModal />
+            <UpdateDetailModal 
+              update={selectedUpdate} 
+              onClose={() => setSelectedUpdate(null)} 
+            />
+            {editingEntry && (
             <EntryModal
               entry={editingEntry}
               onClose={() => setEditingEntry(null)}
-              onSave={(entry, newCard, newTag) => {
+              onSave={(entry, newCard, newTag, repeatMonths = 1, newApp) => {
                 if (newCard) {
                   const newCards = [...(state.config.creditCards || []), newCard];
                   const newConfig = { ...state.config, creditCards: newCards };
                   setState(prev => ({ ...prev, config: newConfig }));
                   api.saveConfig(newConfig);
+                }
+                if (newApp) {
+                  const currentApps = state.config.applications || [];
+                  if (!currentApps.includes(newApp.toUpperCase())) {
+                    const newApps = [...currentApps, newApp.toUpperCase()];
+                    const newConfig = { ...state.config, applications: newApps };
+                    setState(prev => ({ ...prev, config: newConfig }));
+                    api.saveConfig(newConfig);
+                  }
                 }
                 if (newTag) {
                   const currentTags = state.config.categories[entry.category] || [];
@@ -910,17 +1301,45 @@ const App: React.FC = () => {
                     api.saveConfig(newConfig);
                   }
                 }
+
+                // Guardar entrada original
                 saveEntry(entry);
+
+                // Manejar repetición
+                if (repeatMonths && repeatMonths > 1) {
+                  const [y, m, d] = entry.date.split('-').map(Number);
+                  for (let i = 1; i < repeatMonths; i++) {
+                    const nextDate = new Date(y, m - 1 + i, d);
+                    const nextY = nextDate.getFullYear();
+                    const nextM = String(nextDate.getMonth() + 1).padStart(2, '0');
+                    const nextD = String(nextDate.getDate()).padStart(2, '0');
+                    const dateStr = `${nextY}-${nextM}-${nextD}`;
+                    const monthYearStr = `${nextY}-${nextM}`;
+
+                    const newEntry = {
+                      ...entry,
+                      id: crypto.randomUUID(),
+                      date: dateStr,
+                      month_year: monthYearStr,
+                      // Limpiar campos que no deberían repetirse idénticos si fuera necesario, 
+                      // pero para "gasto fijo" suelen ser iguales.
+                    };
+                    saveEntry(newEntry);
+                  }
+                }
               }}
               categories={state.config.categories}
               creditCards={state.config.creditCards || []}
+              applications={state.config.applications || []}
               goals={state.goals}
+              viewMode={state.config.viewMode || 'monthly'}
               onDeleteCard={(card) => {
                 const newCards = state.config.creditCards?.filter(c => c !== card) || [];
                 const newConfig = { ...state.config, creditCards: newCards };
                 setState(prev => ({ ...prev, config: newConfig }));
                 api.saveConfig(newConfig);
               }}
+              allEntries={allEntries}
             />
           )}
 
@@ -958,8 +1377,20 @@ const App: React.FC = () => {
             <InstallmentModal
               installment={editingInstallment}
               onClose={() => setEditingInstallment(null)}
-              onSave={saveInstallment}
+              onSave={(p, newApp) => {
+                if (newApp) {
+                  const currentApps = state.config.applications || [];
+                  if (!currentApps.includes(newApp.toUpperCase())) {
+                    const newApps = [...currentApps, newApp.toUpperCase()];
+                    const newConfig = { ...state.config, applications: newApps };
+                    setState(prev => ({ ...prev, config: newConfig }));
+                    api.saveConfig(newConfig);
+                  }
+                }
+                saveInstallment(p);
+              }}
               creditCards={state.config.creditCards || []}
+              applications={state.config.applications || []}
               categories={state.config.categories}
               onAddCard={(newCard) => {
                 const currentCards = state.config.creditCards || [];
@@ -976,51 +1407,62 @@ const App: React.FC = () => {
                 setState(prev => ({ ...prev, config: newConfig }));
                 api.saveConfig(newConfig);
               }}
+              allEntries={allEntries}
             />
           )}
 
           {viewingInstallment && (
-            <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[110] flex items-center justify-center p-4">
-              <Card title={viewingInstallment.name} subtitle="Plan de amortización proyectado" className="w-full max-w-lg border border-indigo-500/30 shadow-[0_0_100px_rgba(59,130,246,0.2)]">
-                <div className="space-y-6 mt-6">
-                  <div className="grid grid-cols-2 gap-6 bg-blue-600/5 p-6 rounded-[2rem] border border-blue-500/10">
-                    <div>
-                      <span className="text-[10px] font-black text-slate-500 uppercase block mb-1">Inversión Total</span>
-                      <p className="text-2xl font-black">{formatMoney(viewingInstallment.totalAmount)}</p>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-black text-slate-500 uppercase block mb-1">Costo Mensual</span>
-                      <p className="text-2xl font-black text-blue-400">{formatMoney(viewingInstallment.totalAmount / viewingInstallment.installments)}</p>
-                    </div>
-                  </div>
+            <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[110] flex items-center justify-center p-2 sm:p-4">
+              <div className="relative w-full max-w-lg animate-in zoom-in-95 duration-300">
+                {/* Close Button Top Right (Mobile friendly) */}
+                <button
+                  onClick={() => setViewingInstallment(null)}
+                  className="absolute -top-1 right-2 sm:-top-4 sm:-right-4 w-10 h-10 bg-rose-500 text-white rounded-full flex items-center justify-center shadow-lg shadow-rose-500/40 z-[120] hover:scale-110 active:scale-90 transition-all border-2 border-white/20"
+                >
+                  <i className="fas fa-times text-lg"></i>
+                </button>
 
-                  <div className="max-h-[350px] overflow-y-auto custom-scrollbar pr-3">
-                    <div className="space-y-2">
-                      {Array.from({ length: viewingInstallment.installments }).map((_, i) => {
-                        const [sY, sM] = viewingInstallment.startDate.split('-').map(Number);
-                        const date = new Date(sY, sM - 1 + i, 1);
-                        const isCurrent = date.toISOString().slice(0, 7) === state.currentMonth;
-                        const isPast = date.toISOString().slice(0, 7) < state.currentMonth;
+                <Card title={viewingInstallment.name} subtitle="Plan de amortización proyectado" className="w-full border-2 border-indigo-500/30 shadow-[0_0_100px_rgba(59,130,246,0.3)]">
+                  <div className="space-y-4 sm:space-y-6 mt-4 sm:mt-6">
+                    <div className="grid grid-cols-2 gap-3 sm:gap-6 bg-blue-600/5 p-4 sm:p-6 rounded-[1.5rem] sm:rounded-[2rem] border border-blue-500/10">
+                      <div>
+                        <span className="text-[9px] sm:text-[10px] font-black text-slate-500 uppercase block mb-1">Inversión Total</span>
+                        <p className="text-lg sm:text-2xl font-black">{formatMoney(viewingInstallment.totalAmount)}</p>
+                      </div>
+                      <div>
+                        <span className="text-[9px] sm:text-[10px] font-black text-slate-500 uppercase block mb-1">Costo Mensual</span>
+                        <p className="text-lg sm:text-2xl font-black text-blue-400">{formatMoney(viewingInstallment.totalAmount / viewingInstallment.installments)}</p>
+                      </div>
+                    </div>
 
-                        return (
-                          <div key={i} className={`flex justify-between items-center p-5 rounded-2xl border transition-all ${isCurrent ? 'bg-blue-600/20 border-blue-500/40 shadow-lg' : 'bg-white/5 border-white/5'}`}>
-                            <div className="flex items-center gap-4">
-                              <span className="text-xs font-black text-slate-500 bg-white/5 w-8 h-8 flex items-center justify-center rounded-lg">#{i + 1}</span>
-                              <span className={`text-sm font-bold ${isCurrent ? 'text-white' : 'text-slate-400'}`}>
-                                {date.toLocaleString('es-ES', { month: 'long', year: 'numeric' }).toUpperCase()}
+                    <div className="max-h-[50vh] sm:max-h-[350px] overflow-y-auto custom-scrollbar pr-2 sm:pr-3">
+                      <div className="space-y-2">
+                        {Array.from({ length: viewingInstallment.installments }).map((_, i) => {
+                          const [sY, sM] = viewingInstallment.startDate.split('-').map(Number);
+                          const date = new Date(sY, sM - 1 + i, 1);
+                          const isCurrent = date.toISOString().slice(0, 7) === state.currentMonth;
+                          const isPast = date.toISOString().slice(0, 7) < state.currentMonth;
+
+                          return (
+                            <div key={i} className={`flex justify-between items-center p-3 sm:p-5 rounded-xl sm:rounded-2xl border transition-all ${isCurrent ? 'bg-blue-600/20 border-blue-500/40 shadow-lg' : 'bg-white/5 border-white/5'}`}>
+                              <div className="flex items-center gap-3 sm:gap-4">
+                                <span className="text-[10px] sm:text-xs font-black text-slate-500 bg-white/5 w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center rounded-lg">#{i + 1}</span>
+                                <span className={`text-xs sm:text-sm font-bold ${isCurrent ? 'text-white' : 'text-slate-400'}`}>
+                                  {date.toLocaleString('es-ES', { month: 'short', year: 'numeric' }).toUpperCase()}
+                                </span>
+                              </div>
+                              <span className={`text-[9px] sm:text-[10px] font-black uppercase px-2 py-1 sm:px-3 sm:py-1 rounded-lg ${isPast ? 'bg-emerald-500/10 text-emerald-500' : isCurrent ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-600'}`}>
+                                {isPast ? 'Saldada' : isCurrent ? 'Actual' : 'Pendiente'}
                               </span>
                             </div>
-                            <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-lg ${isPast ? 'bg-emerald-500/10 text-emerald-500' : isCurrent ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-600'}`}>
-                              {isPast ? 'Saldada' : isCurrent ? 'Periodo Actual' : 'Pendiente'}
-                            </span>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
+                    <Button className="w-full rounded-2xl h-12 mt-2" variant="outline" onClick={() => setViewingInstallment(null)}>Cerrar Detalle</Button>
                   </div>
-                  <Button className="w-full rounded-2xl" variant="outline" onClick={() => setViewingInstallment(null)}>Cerrar Detalle</Button>
-                </div>
-              </Card>
+                </Card>
+              </div>
             </div>
           )}
         </>
@@ -1032,6 +1474,7 @@ const App: React.FC = () => {
           year={currentYear}
           budgets={state.budgets}
           formatMoney={formatMoney}
+          viewMode={state.config.viewMode || 'monthly'}
         />
       )}
 
@@ -1050,12 +1493,13 @@ const App: React.FC = () => {
 
       {/* TAB: GASTOS EN GRUPO */}
       {activeTab === 'party' && (
-        <PartyView user={user} currentMonth={state.currentMonth} />
+        <PartyView user={user} currentMonth={state.currentMonth} navigationParams={navigationParams} />
       )}
 
       {/* TAB: PRESUPUESTO / MOVIMIENTOS */}
       {activeTab === 'presupuesto' && (
         <PresupuestoView
+          navigate={navigate}
           fileInputRef={fileInputRef}
           handleAIUpload={handleAIUpload}
           isParsing={isParsing}
@@ -1068,6 +1512,7 @@ const App: React.FC = () => {
           currentMonth={state.currentMonth}
           installmentPurchases={state.installmentPurchases}
           currentBudgetEntries={currentBudgetEntries}
+          allEntries={allEntries}
           setViewingInstallment={setViewingInstallment}
           expandedRows={expandedRows}
           setExpandedRows={setExpandedRows}
@@ -1076,6 +1521,17 @@ const App: React.FC = () => {
           onUpdateBudget={handleUpdateBudget}
           onReorderEntries={handleReorderEntries}
           onConfirmEntry={(entry) => saveEntry({ ...entry, is_provisional: false })}
+          onPayEntry={(entry) => {
+            const currentStatus = entry.status ? entry.status.toLowerCase() : '';
+            const isPaid = currentStatus === 'pagado' || currentStatus === 'paid';
+            saveEntry({
+              ...entry,
+              status: isPaid ? TransactionStatus.PENDING : TransactionStatus.PAID
+            });
+          }}
+          initialViewMode={state.config.viewMode || 'monthly'}
+          applications={state.config.applications || []}
+          onApplyDolarRate={handleApplyDolarRate}
         />
       )}
 
@@ -1128,14 +1584,47 @@ const App: React.FC = () => {
               config: state.config
             });
           }}
+          onLogout={handleLogout}
+          onExport={handleExportExcel}
         />
       )}
 
       {/* TAB: ADMIN PANEL */}
-      {activeTab === 'admin' && user.role === 'admin' && (
-        <AdminPanel />
+      {activeTab === 'admin' && user?.email === 'ezequiel.fredes.mondragon@gmail.com' && (
+        <AdminPanel token={localStorage.getItem('token') || sessionStorage.getItem('token') || ''} />
       )}
-    </Layout>
+
+      {/* TOAST DESHACER (UNDO TOAST) */}
+      {undoToast.entry && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] animate-in slide-in-from-bottom-8 duration-300 w-auto min-w-[320px] max-w-sm">
+          <div className="bg-slate-900/95 border border-slate-700/50 shadow-2xl shadow-black/50 backdrop-blur-xl rounded-2xl p-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 overflow-hidden">
+              <div className="w-8 h-8 rounded-full bg-rose-500/20 flex flex-shrink-0 items-center justify-center text-rose-400 relative">
+                <i className="fas fa-trash-can text-sm"></i>
+                <svg className="absolute inset-0 w-8 h-8 -rotate-90">
+                  <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" fill="none" className="text-rose-500/20" />
+                  <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" fill="none" className="text-rose-500" strokeDasharray="94.2" strokeDashoffset="0">
+                    <animate attributeName="stroke-dashoffset" from="0" to="94.2" dur="5s" fill="freeze" />
+                  </circle>
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <p className="text-white text-sm font-semibold truncate leading-tight">Eliminado ({undoToast.timeLeft}s)</p>
+                <p className="text-slate-400 text-xs truncate leading-tight">{undoToast.entry.name}</p>
+              </div>
+            </div>
+            <button
+               onClick={undoDelete}
+               className="flex-shrink-0 bg-white/10 hover:bg-white/20 text-white border border-white/10 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-sm"
+            >
+              Deshacer
+            </button>
+          </div>
+        </div>
+      )}
+
+      </Layout>
+    </>
   );
 };
 

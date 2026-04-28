@@ -22,21 +22,30 @@ export const LandingView: React.FC<LandingViewProps> = ({ onLogin: onAppLogin, d
     // Google Login Hook
     const googleLogin = useGoogleLogin({
         onSuccess: async (tokenResponse) => {
+            console.log('[LANDING] Google login success, accessToken received');
             try {
                 // Use access_token to login via backend (which will fetch user profile)
+                console.log('[LANDING] Calling backend with accessToken...');
                 const data = await api.googleLogin({ accessToken: tokenResponse.access_token }) as any;
+                console.log('[LANDING] Backend response:', { hasToken: !!data.token, hasUser: !!data.user });
 
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
                 localStorage.setItem('loginHistory', 'true');
+                console.log('[LANDING] Token and user saved to localStorage');
 
+                console.log('[LANDING] Calling onAppLogin with user:', data.user);
                 onAppLogin(data.user);
+                console.log('[LANDING] onAppLogin called successfully');
             } catch (err: any) {
-                console.error(err);
+                console.error('[LANDING] Google login error:', err);
                 setError(err.message || 'Error al iniciar sesión con Google');
             }
         },
-        onError: () => setError('Login Failed'),
+        onError: () => {
+            console.error('[LANDING] Google login failed');
+            setError('Login Failed');
+        },
         flow: 'implicit', // Returns access_token
         prompt: 'select_account' // 👈 This forces the account selector!
     });

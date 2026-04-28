@@ -38,6 +38,8 @@ CREATE TABLE entries (
   exchangeRateActual REAL,
   is_provisional INTEGER DEFAULT 0,
   user_id TEXT,
+  linked_income_id TEXT,
+  application TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
@@ -62,6 +64,8 @@ CREATE TABLE installments (
   category TEXT,
   cardName TEXT,
   user_id TEXT,
+  linked_income_id TEXT,
+  application TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
 

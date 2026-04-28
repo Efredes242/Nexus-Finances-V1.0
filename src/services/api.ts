@@ -1,18 +1,21 @@
 import { AppState, BudgetEntry, InstallmentPurchase, SavingsGoal, AppConfig } from '../types';
 
-// Detectar si estamos en localhost o en una IP de red local
-// Detectar si estamos en localhost o en una IP de red local
+// Detectar si estamos en localhost, Cloudflare o dominio personalizado
 const hostname = window.location.hostname;
 
-let API_URL = 'http://localhost:3001/api'; // Default dev
+let API_URL = '/api';
 
-// Si estamos en Cloudflare Pages o en el dominio personalizado
+// Si estamos en Cloudflare Pages o en el dominio personalizado, usar la URL del Worker
 if (hostname.includes('pages.dev') || hostname.includes('ezequielfredes.com.ar')) {
   API_URL = 'https://nexusfinance.ezequiel-fredes-mondragon.workers.dev/api';
-} else {
-  // Lógica para Electron / Red Local
-  const apiHost = (!hostname || hostname === '') ? 'localhost' : hostname;
-  API_URL = `http://${apiHost}:3001/api`;
+} else if (hostname === 'localhost' || hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+  // Development independent frontend (Vite default 5173) -> Target 3001
+  if (window.location.port === '5173') {
+    API_URL = 'http://localhost:3001/api';
+  } else {
+    // Production local (Served by Express) -> Relative path
+    API_URL = '/api';
+  }
 }
 
 const getHeaders = () => {
@@ -24,7 +27,9 @@ const getHeaders = () => {
 };
 
 const handleResponse = async (response: Response) => {
-  if (response.status === 401 || response.status === 403) {
+  // Only logout on 401 (invalid/expired token), not 403 (insufficient permissions)
+  if (response.status === 401) {
+    console.log('[API] 401 Unauthorized - clearing session and reloading');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     sessionStorage.removeItem('token');
@@ -32,15 +37,35 @@ const handleResponse = async (response: Response) => {
     window.location.reload(); // Force re-login
     throw new Error('Unauthorized');
   }
-  if (!response.ok) {
+
+  // For 403, try to get specific message or throw default
+  if (response.status === 403) {
     const text = await response.text();
     let error;
     try {
       error = JSON.parse(text);
     } catch {
+      error = { message: 'Forbidden: Insufficient permissions' };
+    }
+    console.log('[API] 403 Forbidden:', error);
+    // Throw the raw error object so frontend can access custom properties (approval_status)
+    throw error;
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    let error: any;
+    try {
+      error = JSON.parse(text);
+    } catch {
       error = { error: text || `Error ${response.status}: ${response.statusText}` };
     }
-    throw new Error(error.error || error.message || response.statusText);
+    // Throw detailed error info if available
+    const errorMessage = error.error || error.message || response.statusText;
+    const finalError = new Error(errorMessage) as any;
+    finalError.details = error.details;
+    finalError.fullError = error.fullError;
+    throw finalError;
   }
   return response.json();
 };
@@ -126,10 +151,27 @@ export const api = {
     return handleResponse(res);
   },
 
+  async getPendingUserCount() {
+    const res = await fetch(`${API_URL}/admin/pending-count`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
   async deleteUser(id: string) {
     const res = await fetch(`${API_URL}/users/${id}`, {
       method: 'DELETE',
       headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async deleteUserData(scope: 'monthly' | 'annual' | 'all', date?: string) {
+    const res = await fetch(`${API_URL}/user/data`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+      body: JSON.stringify({ scope, date })
     });
     return handleResponse(res);
   },
@@ -160,25 +202,42 @@ export const api = {
     return handleResponse(res);
   },
 
-  // Sync all data on load
-  async syncData(): Promise<{ entries: any[], goals: any[], installments: any[], config: any, categoryBudgets: any[] } | null> {
+  // Sync all data on load — always scoped to current year to protect Worker memory limits
+  async syncData(year?: string): Promise<{ entries: any[], goals: any[], installments: any[], config: any, categoryBudgets: any[] } | null> {
     console.log("Starting syncData...");
+    // Always include the year. If not provided, use the current year.
+    const targetYear = year || new Date().getFullYear().toString();
     try {
       const headers = getHeaders();
       const [entries, goals, installments, config, categoryBudgets] = await Promise.all([
-        fetch(`${API_URL}/data`, { headers }).then(handleResponse),
+        fetch(`${API_URL}/data?year=${targetYear}`, { headers }).then(handleResponse),
         fetch(`${API_URL}/goals`, { headers }).then(handleResponse),
         fetch(`${API_URL}/installments`, { headers }).then(handleResponse),
         fetch(`${API_URL}/config`, { headers }).then(r => r.status === 404 ? null : r.json()),
         fetch(`${API_URL}/budgets`, { headers }).then(handleResponse)
       ]);
       console.log("syncData completed successfully");
-      return { entries, goals, installments, config, categoryBudgets };
-    } catch (e) {
+      return { 
+        entries: (entries as any[]) || [], 
+        goals: (goals as any[]) || [], 
+        installments: (installments as any[]) || [], 
+        config, 
+        categoryBudgets: (categoryBudgets as any[]) || [] 
+      };
+    } catch (e: any) {
       console.error("API Sync failed", e);
       return null;
     }
   },
+
+  // Load entries for a specific year (for historical navigation)
+  async getEntriesByYear(year: string): Promise<any[]> {
+    const res = await fetch(`${API_URL}/data?year=${year}`, { headers: getHeaders() });
+    const data = await handleResponse(res);
+    return (data as any[]) || [];
+  },
+
+
 
   async saveEntry(entry: BudgetEntry) {
     const payload = {
@@ -269,6 +328,16 @@ export const api = {
     return handleResponse(res);
   },
 
+  async getPublicUsers() {
+    const res = await fetch(`${API_URL}/users/public`, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+
+
   // --- PARTY SYSTEM ---
   async createParty(name: string, description?: string) {
     const token = localStorage.getItem('token');
@@ -298,8 +367,7 @@ export const api = {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    if (!res.ok) throw new Error('Failed');
-    return res.json();
+    return handleResponse(res);
   },
 
   async deletePartyExpense(partyId: string, expenseId: string) {
@@ -308,11 +376,7 @@ export const api = {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Unknown Error' }));
-      throw new Error(err.error || 'Failed to delete');
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
   async inviteToParty(partyId: string, email: string) {
@@ -330,8 +394,7 @@ export const api = {
       headers: getHeaders(),
       body: JSON.stringify({ name })
     });
-    if (!res.ok) throw new Error('Failed to add guest');
-    return res.json();
+    return handleResponse(res);
   },
 
   async cancelInvitation(memberId: string) {
@@ -482,6 +545,41 @@ export const api = {
     const res = await fetch(`${API_URL}/parties/${partyId}/installments/${id}`, {
       method: 'DELETE',
       headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  // D1 Sync (Development Only)
+  async syncFromD1() {
+    const res = await fetch(`${API_URL}/admin/sync-from-d1`, {
+      method: 'POST',
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  // --- INTEGRITY SYSTEM API ---
+  async getPendingApprovals(partyId: string) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/approvals`, {
+      headers: getHeaders()
+    });
+    return handleResponse(res);
+  },
+
+  async createApprovalRequest(partyId: string, data: { target_expense_id: string | null, action_type: 'EDIT' | 'DELETE', data_payload: any, reason: string }) {
+    const res = await fetch(`${API_URL}/parties/${partyId}/approvals`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    });
+    return handleResponse(res);
+  },
+
+  async decideApproval(partyId: string, approvalId: string, decision: 'APPROVED' | 'REJECTED') {
+    const res = await fetch(`${API_URL}/parties/${partyId}/approvals/${approvalId}/decide`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ decision })
     });
     return handleResponse(res);
   },

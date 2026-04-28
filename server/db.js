@@ -40,6 +40,8 @@ export const run = (sql, params = []) => {
 
 // Initialization
 db.serialize(() => {
+  db.run("PRAGMA foreign_keys = ON");
+
   db.run(`
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY,
@@ -56,7 +58,8 @@ db.serialize(() => {
       originalAmount REAL,
       currency TEXT,
       exchangeRateEstimated REAL,
-      exchangeRateActual REAL
+      exchangeRateActual REAL,
+      is_provisional INTEGER DEFAULT 0
     )
   `);
 
@@ -131,6 +134,7 @@ db.serialize(() => {
       const hasCurrency = rows.some(r => r.name === 'currency');
       const hasExchangeRateEstimated = rows.some(r => r.name === 'exchangeRateEstimated');
       const hasExchangeRateActual = rows.some(r => r.name === 'exchangeRateActual');
+      const hasIsProvisional = rows.some(r => r.name === 'is_provisional');
 
       if (!hasOriginalAmount) {
         db.run(`ALTER TABLE entries ADD COLUMN originalAmount REAL`, (err) => {
@@ -152,6 +156,11 @@ db.serialize(() => {
           if (!err) console.log(`Added exchangeRateActual to entries`);
         });
       }
+      if (!hasIsProvisional) {
+        db.run(`ALTER TABLE entries ADD COLUMN is_provisional INTEGER DEFAULT 0`, (err) => {
+          if (!err) console.log(`Added is_provisional to entries`);
+        });
+      }
     }
   });
 
@@ -164,10 +173,16 @@ db.serialize(() => {
       const hasFirstName = rows.some(r => r.name === 'firstName');
       const hasLastName = rows.some(r => r.name === 'lastName');
       const hasBirthDate = rows.some(r => r.name === 'birthDate');
+      const hasStatus = rows.some(r => r.name === 'status');
 
       if (!hasEmail) {
         db.run(`ALTER TABLE users ADD COLUMN email TEXT`, (err) => {
           if (!err) console.log(`Added email to users`);
+        });
+      }
+      if (!hasStatus) {
+        db.run(`ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'`, (err) => {
+          if (!err) console.log(`Added status to users`);
         });
       }
       if (!hasGoogleId) {
@@ -225,7 +240,8 @@ db.serialize(() => {
       user_id TEXT,
       status TEXT NOT NULL,
       invited_email TEXT,
-      joined_at TEXT NOT NULL,
+      joined_at TEXT,
+      is_guest INTEGER DEFAULT 0,
       FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
     )
   `);
@@ -240,6 +256,68 @@ db.serialize(() => {
       date TEXT NOT NULL,
       category TEXT,
       participants TEXT,
+      FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS installment_plans (
+      id TEXT PRIMARY KEY,
+      party_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      total_amount REAL NOT NULL,
+      installments_count INTEGER NOT NULL,
+      installment_amount REAL NOT NULL,
+      payer_id TEXT NOT NULL,
+      debtor_id TEXT, -- Legacy support
+      participants TEXT, -- JSON array of participant IDs
+      start_date TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      currency TEXT DEFAULT 'ARS',
+      exchange_rate REAL DEFAULT 1,
+      is_recurring INTEGER DEFAULT 0,
+      FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
+    )
+  `);
+
+  // party_debts and party_installment_plan_participants are handled via JSON in installment_plans for prod compatibility
+
+  db.all(`PRAGMA table_info(party_members)`, (err, rows) => {
+    if (!err && rows) {
+      const hasGuestName = rows.some(r => r.name === 'guest_name');
+      if (!hasGuestName) {
+        db.run(`ALTER TABLE party_members ADD COLUMN guest_name TEXT`, (err) => {
+          if (!err) console.log(`Added guest_name to party_members`);
+        });
+      }
+
+      const hasIsGuest = rows.some(r => r.name === 'is_guest');
+      if (!hasIsGuest) {
+        db.run(`ALTER TABLE party_members ADD COLUMN is_guest INTEGER DEFAULT 0`, (err) => {
+          if (!err) console.log(`Added is_guest to party_members`);
+        });
+      }
+    }
+  });
+
+  db.all(`PRAGMA table_info(installment_plans)`, (err, rows) => {
+    if (!err && rows) {
+      const hasIsRecurring = rows.some(r => r.name === 'is_recurring');
+      if (!hasIsRecurring) {
+        db.run(`ALTER TABLE installment_plans ADD COLUMN is_recurring INTEGER DEFAULT 0`, (err) => {
+          if (!err) console.log(`Added is_recurring to installment_plans`);
+        });
+      }
+    }
+  });
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS party_nicknames (
+      party_id TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      nickname TEXT NOT NULL,
+      PRIMARY KEY (party_id, member_id),
       FOREIGN KEY(party_id) REFERENCES parties(id) ON DELETE CASCADE
     )
   `);

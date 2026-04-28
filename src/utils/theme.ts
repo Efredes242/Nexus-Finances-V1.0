@@ -1,6 +1,7 @@
 // Theme utility to get color classes based on user preference
 export const getThemeColors = () => {
-    const theme = typeof window !== 'undefined' ? (localStorage.getItem('colorTheme') || 'new') : 'new';
+    // Force 'new' theme (Teal/Verde) permanently as requested
+    const theme = 'new';
 
     return {
         // Avatar colors
@@ -90,5 +91,5 @@ export const toggleTheme = () => {
 
 // Get current theme
 export const getCurrentTheme = () => {
-    return typeof window !== 'undefined' ? (localStorage.getItem('colorTheme') || 'new') : 'new';
+    return 'new';
 };

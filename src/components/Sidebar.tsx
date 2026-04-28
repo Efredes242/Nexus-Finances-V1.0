@@ -2,6 +2,7 @@ import React from 'react';
 import { APP_TITLE_PREFIX, APP_TITLE_SUFFIX, APP_SUBTITLE } from '../config/constants';
 import { Tooltip } from './Tooltip';
 import { getThemeColors } from '../utils/theme';
+import { api } from '../services/api';
 
 interface SidebarProps {
   sidebarOpen: boolean;
@@ -32,10 +33,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
   formatMoney,
   onExport,
   onLogout,
-  pendingInvitesCount = 0
+  pendingInvitesCount: propPendingInvitesCount = 0
 }) => {
   const themeColors = getThemeColors();
   const theme = localStorage.getItem('colorTheme') || 'new';
+  const [pendingCount, setPendingCount] = React.useState(0);
+
+  // Fetch Admin Pending Count
+  React.useEffect(() => {
+    const fetchPending = async () => {
+      // Check if user is admin or the specific super admin email
+      if (user?.role === 'admin' || user?.email === 'ezequiel.fredes.mondragon@gmail.com') {
+        try {
+          const { count } = await api.getPendingUserCount() as any;
+          setPendingCount(count);
+        } catch (e) {
+          console.error('Failed to fetch pending count', e);
+        }
+      }
+    };
+
+    fetchPending();
+
+    // Optional: Poll every 30 seconds
+    const interval = setInterval(fetchPending, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  // Rename prop to avoid conflict/confusion if needed, though pendingInvitesCount is for Party
+  const pendingInvitesCount = propPendingInvitesCount;
+
   return (
     <aside className={`
       fixed inset-y-0 left-0 z-50 w-72 lg:w-full glass 
@@ -87,15 +114,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      <nav className="space-y-3 flex-1 overflow-y-hidden hover:overflow-y-auto custom-scrollbar px-3">
+      <nav className="space-y-3 flex-1 overflow-y-auto custom-scrollbar px-3">
         {[
           { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
-          { id: 'party', icon: 'fa-users', label: 'Gastos en Grupo' },
           { id: 'presupuesto', icon: 'fa-receipt', label: 'Movimientos' },
+          { id: 'party', icon: 'fa-users', label: 'Gastos en Grupo' },
           { id: 'tarjetas', icon: 'fa-credit-card', label: 'Cuotas / Tarjetas' },
           { id: 'metas', icon: 'fa-bullseye', label: 'Metas' },
-          { id: 'config', icon: 'fa-cog', label: 'Configuración' },
-          ...(user.role === 'admin' ? [{ id: 'admin', icon: 'fa-users-cog', label: 'Admin Panel' }] : [])
+          { id: 'config', icon: 'fa-cog', label: 'Configuración' }
         ].map(item => (
           <button
             key={item.id}
@@ -123,25 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ))}
       </nav>
 
-      <div className="px-3 space-y-2 mb-4">
-        <button
-          onClick={onExport}
-          className={`w-full flex items-center ${desktopSidebarOpen ? 'justify-start px-4 gap-4' : 'justify-center px-0 gap-0'} py-3 rounded-2xl text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300 transition-all duration-300 group`}
-          title={!desktopSidebarOpen ? "Exportar Excel" : ''}
-        >
-          <i className="fas fa-file-excel text-lg w-6 flex justify-center group-hover:scale-110 transition-transform"></i>
-          <span className={`font-bold text-sm transition-all duration-300 whitespace-nowrap overflow-hidden ${desktopSidebarOpen ? 'opacity-100 max-w-[150px]' : 'opacity-0 max-w-0 hidden'}`}>Exportar Excel</span>
-        </button>
 
-        <button
-          onClick={onLogout}
-          className={`w-full flex items-center ${desktopSidebarOpen ? 'justify-start px-4 gap-4' : 'justify-center px-0 gap-0'} py-3 rounded-2xl text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 transition-all duration-300 group`}
-          title={!desktopSidebarOpen ? "Cerrar Sesión" : ''}
-        >
-          <i className="fas fa-sign-out-alt text-lg w-6 flex justify-center group-hover:scale-110 transition-transform"></i>
-          <span className={`font-bold text-sm transition-all duration-300 whitespace-nowrap overflow-hidden ${desktopSidebarOpen ? 'opacity-100 max-w-[150px]' : 'opacity-0 max-w-0 hidden'}`}>Cerrar Sesión</span>
-        </button>
-      </div>
 
       <div className={`mt-auto transition-all duration-300 ${desktopSidebarOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none h-0'}`}>
         {/* User Profile Info */}
@@ -160,6 +168,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </p>
               <p className="text-[10px] text-slate-500 truncate" title={user?.email}>{user?.email}</p>
             </div>
+          </div>
+        )}
+
+        {/* Admin Panel Button - Only for admin */}
+        {(user?.email?.toLowerCase().trim() === 'ezequiel.fredes.mondragon@gmail.com' || user?.role === 'admin') && (
+          <div className="px-3 mb-3">
+            <button
+              onClick={() => {
+                setActiveTab('admin');
+                if (window.innerWidth < 1024) setSidebarOpen(false);
+              }}
+              className={`w-full flex items-center ${desktopSidebarOpen ? 'justify-start px-4 gap-4' : 'justify-center px-0 gap-0'} py-3 rounded-2xl transition-all duration-300 relative overflow-hidden group border border-rose-500/20 ${activeTab === 'admin'
+                ? 'bg-rose-500/20 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.2)]'
+                : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300'
+                }`}
+              title={!desktopSidebarOpen ? 'Admin Panel' : ''}
+            >
+              {activeTab === 'admin' && (
+                <div className="absolute inset-0 bg-rose-500/10 blur-xl"></div>
+              )}
+              <i className={`fas fa-users-cog text-lg w-6 flex justify-center relative z-10 ${activeTab === 'admin' ? 'text-rose-400 drop-shadow-[0_0_10px_rgba(244,63,94,0.5)]' : ''}`}></i>
+              <span className={`font-bold text-sm relative z-10 transition-all duration-300 whitespace-nowrap overflow-hidden ${desktopSidebarOpen ? 'opacity-100 max-w-[150px]' : 'opacity-0 max-w-0 hidden'}`}>Admin Panel</span>
+              {typeof pendingCount === 'number' && pendingCount > 0 && (
+                <span className={`absolute ${desktopSidebarOpen ? 'right-4' : 'top-2 right-2'} bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full z-20 shadow-lg animate-pulse`}>
+                  {pendingCount}
+                </span>
+              )}
+            </button>
           </div>
         )}
 

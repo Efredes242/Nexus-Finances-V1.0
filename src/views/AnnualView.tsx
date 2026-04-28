@@ -12,12 +12,14 @@ interface AnnualViewProps {
     year: string;
     budgets: Record<string, MonthlyBudget>;
     formatMoney: (amount: number) => string;
+    viewMode: 'monthly' | 'biweekly';
 }
 
 export const AnnualView: React.FC<AnnualViewProps> = ({
     year,
     budgets,
-    formatMoney
+    formatMoney,
+    viewMode
 }) => {
     const theme = localStorage.getItem('colorTheme') || 'new';
     const themeColors = getThemeColors();
@@ -35,6 +37,13 @@ export const AnnualView: React.FC<AnnualViewProps> = ({
 
             if (budget) {
                 budget.entries.forEach(e => {
+                    // Filter based on View Mode
+                    const isVisible = viewMode === 'biweekly'
+                        ? e.viewType === 'biweekly'
+                        : (e.viewType === 'monthly' || !e.viewType);
+
+                    if (!isVisible) return;
+
                     if (e.category === CategoryType.INCOME) {
                         income += e.amount;
                     } else if (e.category === CategoryType.SAVINGS) {
@@ -68,7 +77,11 @@ export const AnnualView: React.FC<AnnualViewProps> = ({
         Object.keys(budgets).forEach(key => {
             if (key.startsWith(year)) {
                 budgets[key].entries.forEach(e => {
-                    if (e.category !== CategoryType.INCOME) {
+                    const isVisible = viewMode === 'biweekly'
+                        ? e.viewType === 'biweekly'
+                        : (e.viewType === 'monthly' || !e.viewType);
+
+                    if (isVisible && e.category !== CategoryType.INCOME) {
                         categoryTotals[e.category] = (categoryTotals[e.category] || 0) + e.amount;
                     }
                 });

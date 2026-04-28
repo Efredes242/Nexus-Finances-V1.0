@@ -28,6 +28,12 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 app.use(cors());
 app.use(express.json());
 
+// Google Auth COOP Fix
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
+
 // Multer for file uploads
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -151,8 +157,10 @@ app.get('/api/has-users', async (req, res) => {
 // Google Login
 app.post('/api/auth/google', async (req, res) => {
   const { credential, accessToken } = req.body;
+  console.log('[GOOGLE AUTH] Request received:', { hasCredential: !!credential, hasAccessToken: !!accessToken });
 
   if (!credential && !accessToken) {
+    console.log('[GOOGLE AUTH] ERROR: No credential or accessToken');
     return res.status(400).json({ error: 'Credential or Access Token required' });
   }
 
@@ -160,18 +168,24 @@ app.post('/api/auth/google', async (req, res) => {
     let email, name, sub, picture;
 
     if (credential) {
+      console.log('[GOOGLE AUTH] Verifying credential token...');
       // Verify ID Token (Standard <GoogleLogin> component)
       const ticket = await client.verifyIdToken({
         idToken: credential,
         audience: process.env.GOOGLE_CLIENT_ID,
       });
       const payload = ticket.getPayload();
-      if (!payload) return res.status(400).json({ error: 'Invalid token' });
+      if (!payload) {
+        console.log('[GOOGLE AUTH] ERROR: No payload from token');
+        return res.status(400).json({ error: 'Invalid token' });
+      }
 
       email = payload.email;
       sub = payload.sub; // unique google id
       picture = payload.picture;
+      console.log('[GOOGLE AUTH] Token verified:', { email, sub });
     } else if (accessToken) {
+      console.log('[GOOGLE AUTH] Verifying access token...');
       // Verify Access Token (Custom useGoogleLogin hook)
       const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${accessToken}` }
@@ -183,10 +197,13 @@ app.post('/api/auth/google', async (req, res) => {
       email = userInfo.email;
       sub = userInfo.sub;
       picture = userInfo.picture;
+      console.log('[GOOGLE AUTH] Access token verified:', { email, sub });
     }
 
     // Check if user exists by google_id OR email
+    console.log('[GOOGLE AUTH] Checking for existing user:', { sub, email });
     let user = await get('SELECT * FROM users WHERE google_id = ? OR email = ?', [sub, email]);
+    console.log('[GOOGLE AUTH] User found:', user ? `Yes (${user.email})` : 'No');
 
     if (!user) {
       // Create new user
@@ -201,19 +218,37 @@ app.post('/api/auth/google', async (req, res) => {
       const id = uuidv4();
       const dummyPassword = await bcrypt.hash(uuidv4(), 10);
 
-      await run('INSERT INTO users (id, username, password, email, google_id, role, avatar, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-        [id, username, dummyPassword, email, sub, 'user', picture]);
+      // Determine status: Auto-approve admin, others pending
+      const ADMIN_EMAIL = 'ezequiel.fredes.mondragon@gmail.com';
+      const status = (email === ADMIN_EMAIL) ? 'active' : 'pending';
 
-      user = { id, username, email, role: 'user', must_change_password: 0, avatar: picture };
+      await run('INSERT INTO users (id, username, password, email, google_id, role, avatar, must_change_password, status) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)',
+        [id, username, dummyPassword, email, sub, 'user', picture, status]);
+
+      user = { id, username, email, role: 'user', must_change_password: 0, avatar: picture, status };
+
+      if (status === 'pending') {
+        console.log(`[AUTH] New user pending approval: ${email}`);
+        console.log(`[EMAIL-MOCK] To: ${ADMIN_EMAIL} | Subject: Nueva solicitud de acceso | Body: El usuario ${email} ha solicitado acceso.`);
+        return res.status(403).json({ error: 'Tu cuenta está pendiente de aprobación por el administrador. Se ha notificado al responsable.' });
+      }
+
     } else {
       // Update existing user with google info if missing
       if (!user.google_id || !user.avatar) {
         await run('UPDATE users SET google_id = ?, avatar = ? WHERE id = ?', [sub, picture, user.id]);
       }
+
+      // Check status
+      if (user.status === 'pending') {
+        return res.status(403).json({ error: 'Tu cuenta aún está pendiente de aprobación.' });
+      }
     }
 
+    console.log('[GOOGLE AUTH] Generating JWT token for user:', user.id);
     const token = jwt.sign({ id: user.id, username: user.username, role: user.user_role || user.role }, JWT_SECRET, { expiresIn: '24h' });
 
+    console.log('[GOOGLE AUTH] SUCCESS - Sending response');
     res.json({
       token,
       user: {
@@ -247,6 +282,43 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- Admin Approval Endpoints ---
+
+app.get('/api/admin/pending-users', authenticateToken, async (req, res) => {
+  try {
+    const user = await get('SELECT email FROM users WHERE id = ?', [req.user.id]);
+    if (user?.email !== 'ezequiel.fredes.mondragon@gmail.com') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const pending = await query('SELECT id, username, email, google_id FROM users WHERE status = ?', ['pending']);
+    res.json(pending);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/admin/approve-user', authenticateToken, async (req, res) => {
+  const { userId, action } = req.body; // action: 'approve' or 'reject'
+  try {
+    const user = await get('SELECT email FROM users WHERE id = ?', [req.user.id]);
+    if (user?.email !== 'ezequiel.fredes.mondragon@gmail.com') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (action === 'approve') {
+      await run('UPDATE users SET status = ? WHERE id = ?', ['active', userId]);
+    } else if (action === 'reject') {
+      await run('DELETE FROM users WHERE id = ?', [userId]);
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -391,6 +463,63 @@ app.put('/api/users/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete User Data (Granular)
+app.delete('/api/user/data', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { scope, date } = req.body; // scope: 'monthly' | 'annual' | 'all', date: 'YYYY-MM' or 'YYYY'
+
+  console.log(`[DELETE DATA] Request from user ${userId} | Scope: ${scope} | Date: ${date}`);
+
+  if (!scope || !['monthly', 'annual', 'all'].includes(scope)) {
+    return res.status(400).json({ error: 'Invalid scope' });
+  }
+
+  try {
+    let result = { entries: 0, goals: 0, installments: 0, config: 0 };
+
+    if (scope === 'all') {
+      // Delete ALL user data (except user account itself)
+      const r1 = await run('DELETE FROM entries WHERE user_id = ?', [userId]);
+      const r2 = await run('DELETE FROM goals WHERE user_id = ?', [userId]);
+      const r3 = await run('DELETE FROM installments WHERE user_id = ?', [userId]);
+      // Also clear party expenses where user paid? Maybe too aggressive for 'All Data', usually implies private data. 
+      // But user asked for "erase all data of logged account".
+      // Let's stick to personal finance data for now as per plan.
+
+      // Optionally could reset config
+      // const r4 = await run('DELETE FROM user_configs WHERE user_id = ?', [userId]); 
+
+      result.entries = r1.changes;
+      result.goals = r2.changes;
+      result.installments = r3.changes;
+      // result.config = r4.changes;
+
+    } else if (scope === 'monthly') {
+      // format expected: YYYY-MM
+      if (!date || !/^\d{4}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Invalid date format for monthly scope. Expected YYYY-MM' });
+      }
+      const r1 = await run('DELETE FROM entries WHERE user_id = ? AND month_year = ?', [userId, date]);
+      result.entries = r1.changes;
+
+    } else if (scope === 'annual') {
+      // format expected: YYYY
+      if (!date || !/^\d{4}$/.test(date)) {
+        return res.status(400).json({ error: 'Invalid date format for annual scope. Expected YYYY' });
+      }
+      const r1 = await run('DELETE FROM entries WHERE user_id = ? AND month_year LIKE ?', [userId, `${date}-%`]);
+      result.entries = r1.changes;
+    }
+
+    console.log(`[DELETE DATA] Success. Deleted:`, result);
+    res.json({ success: true, deleted: result });
+
+  } catch (error) {
+    console.error('[DELETE DATA] Error:', error);
+    res.status(500).json({ error: 'Server error during data deletion' });
+  }
+});
+
 // --- Data Endpoints ---
 
 // GET /api/data (Optional year)
@@ -410,6 +539,126 @@ app.get('/api/data', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 });
+
+// 8. Update Party
+app.put('/api/parties/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { name, description } = req.body;
+  const userId = req.user.id;
+
+  try {
+    const party = await get('SELECT created_by FROM parties WHERE id = ?', [id]);
+    if (!party) return res.status(404).json({ error: 'Party not found' });
+    if (party.created_by !== userId) return res.status(403).json({ error: 'Not authorized' });
+
+    await run('UPDATE parties SET name = ?, description = ? WHERE id = ?', [name, description, id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 9. Delete Party
+app.delete('/api/parties/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const party = await get('SELECT created_by FROM parties WHERE id = ?', [id]);
+    if (!party) return res.status(404).json({ error: 'Party not found' });
+    if (party.created_by !== userId) return res.status(403).json({ error: 'Not authorized' });
+
+    // Delete everything related to party
+    await run('DELETE FROM party_expenses WHERE party_id = ?', [id]);
+    await run('DELETE FROM party_members WHERE party_id = ?', [id]);
+    await run('DELETE FROM party_nicknames WHERE party_id = ?', [id]);
+
+    // Attempt to delete installment plans if table exists (ignoring error if not)
+    try { await run('DELETE FROM party_installment_plans WHERE party_id = ?', [id]); } catch (e) { }
+
+    await run('DELETE FROM parties WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 10. Delete Party Expense
+app.delete('/api/parties/:partyId/expenses/:expenseId', authenticateToken, async (req, res) => {
+  const { partyId, expenseId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const expense = await get('SELECT payer_id FROM party_expenses WHERE id = ? AND party_id = ?', [expenseId, partyId]);
+    if (!expense) return res.status(404).json({ error: 'Expense not found' });
+
+    const party = await get('SELECT created_by FROM parties WHERE id = ?', [partyId]);
+
+    // Allow if user is payer OR party creator
+    if (expense.payer_id !== userId && party?.created_by !== userId) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    await run('DELETE FROM party_expenses WHERE id = ?', [expenseId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 11. Update Party Expense
+app.put('/api/parties/:partyId/expenses/:expenseId', authenticateToken, async (req, res) => {
+  const { partyId, expenseId } = req.params;
+  const { description, amount, date, participants, category } = req.body;
+  const userId = req.user.id;
+
+  try {
+    const member = await get('SELECT status FROM party_members WHERE party_id = ? AND user_id = ? AND status = ?', [partyId, userId, 'accepted']);
+    if (!member) return res.status(403).json({ error: 'Not a member' });
+
+    const participantsJson = JSON.stringify(participants || []);
+    await run('UPDATE party_expenses SET description=?, amount=?, date=?, participants=?, category=? WHERE id=? AND party_id=?',
+      [description, amount, date, participantsJson, category, expenseId, partyId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 12. Remove Member (Cancel Invitation or Kick)
+app.delete('/api/parties/members/:memberId', authenticateToken, async (req, res) => {
+  const { memberId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    // Get member info to check party rights
+    const targetMember = await get('SELECT * FROM party_members WHERE id = ?', [memberId]);
+    if (!targetMember) return res.status(404).json({ error: 'Member not found' });
+
+    const party = await get('SELECT created_by FROM parties WHERE id = ?', [targetMember.party_id]);
+
+    // Only creator can remove members, OR user can remove themselves (leave party)
+    const isSelf = targetMember.user_id === userId;
+    const isCreator = party?.created_by === userId;
+
+    if (!isSelf && !isCreator) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    await run('DELETE FROM party_members WHERE id = ?', [memberId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+
 
 // POST /api/entries
 app.post('/api/entries', authenticateToken, async (req, res) => {
@@ -434,6 +683,8 @@ app.post('/api/entries', authenticateToken, async (req, res) => {
     const exchangeRateEstimated = body.exchangeRateEstimated ?? 1;
     const exchangeRateActual = body.exchangeRateActual ?? 1;
     const is_provisional = body.is_provisional ? 1 : 0;
+    const linked_income_id = body.linkedIncomeId || null;
+    const application = body.application || null;
 
     // Check if entry exists and belongs to user
     const exists = await get('SELECT id FROM entries WHERE id = ? AND user_id = ?', [id, userId]);
@@ -441,14 +692,20 @@ app.post('/api/entries', authenticateToken, async (req, res) => {
     if (exists) {
       await run(`
         UPDATE entries 
-        SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, exchangeRateActual = ?, is_provisional = ?
+        SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, 
+            cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, 
+            exchangeRateActual = ?, is_provisional = ?, linked_income_id = ?, application = ?
         WHERE id = ? AND user_id = ?
-      `, [name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional, id, userId]);
+      `, [name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional, linked_income_id, application, id, userId]);
     } else {
       await run(`
-        INSERT INTO entries (id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, userId, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional]);
+        INSERT INTO entries (
+            id, name, amount, category, tag, date, paymentMethod, status, month_year, 
+            cardName, financingPlan, user_id, originalAmount, currency, exchange_rate_estimated, 
+            exchange_rate_actual, is_provisional, linked_income_id, application
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [id, name, amount, category, tag, date, paymentMethod, status, month_year, cardName, financingPlan, userId, originalAmount, currency, exchangeRateEstimated, exchangeRateActual, is_provisional, linked_income_id, application]);
     }
     res.json({ success: true });
   } catch (error) {
@@ -543,12 +800,15 @@ app.post('/api/installments', authenticateToken, async (req, res) => {
   }
   try {
     const exists = await get('SELECT id FROM installments WHERE id = ? AND user_id = ?', [id, userId]);
+    const linked_income_id = body.linkedIncomeId || null;
+    const application = body.application || null;
+
     if (exists) {
-      await run(`UPDATE installments SET name=?, totalAmount=?, installments=?, startDate=?, description=?, category=?, cardName=? WHERE id=? AND user_id=?`,
-        [name, totalAmount, installments, startDate, description, category, cardName, id, userId]);
+      await run(`UPDATE installments SET name=?, totalAmount=?, installments=?, startDate=?, description=?, category=?, cardName=?, linked_income_id=?, application=? WHERE id=? AND user_id=?`,
+        [name, totalAmount, installments, startDate, description, category, cardName, linked_income_id, application, id, userId]);
     } else {
-      await run(`INSERT INTO installments (id, name, totalAmount, installments, startDate, description, category, cardName, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, name, totalAmount, installments, startDate, description, category, cardName, userId]);
+      await run(`INSERT INTO installments (id, name, totalAmount, installments, startDate, description, category, cardName, linked_income_id, application, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, name, totalAmount, installments, startDate, description, category, cardName, linked_income_id, application, userId]);
     }
     res.json({ success: true });
   } catch (error) {
@@ -842,7 +1102,7 @@ app.post('/api/parties', authenticateToken, async (req, res) => {
   }
 });
 
-// 2. Invite User
+// 2. Invite User (Email)
 app.post('/api/parties/invite', authenticateToken, async (req, res) => {
   const { partyId, email } = req.body;
   if (!partyId || !email) return res.status(400).json({ error: 'Missing fields' });
@@ -859,6 +1119,54 @@ app.post('/api/parties/invite', authenticateToken, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 2b. Add Virtual Guest
+app.post('/api/parties/:id/guests', authenticateToken, async (req, res) => {
+  const { id: partyId } = req.params;
+  const { name } = req.body;
+
+  if (!name) return res.status(400).json({ error: 'Guest name required' });
+
+  try {
+    // Verify membership
+    const userId = req.user.id;
+    const member = await get('SELECT status FROM party_members WHERE party_id = ? AND user_id = ? AND status = ?', [partyId, userId, 'accepted']);
+    if (!member) return res.status(403).json({ error: 'Not a member' });
+
+    const memberId = uuidv4();
+    const now = new Date().toISOString();
+
+    // Added is_guest = 1
+    await run('INSERT INTO party_members (id, party_id, status, guest_name, joined_at, is_guest) VALUES (?, ?, ?, ?, ?, ?)',
+      [memberId, partyId, 'guest', name, now, 1]);
+
+    res.json({ success: true, memberId });
+  } catch (error) {
+    console.error('Virtual Guest Creation Error:', error);
+    // Return actual error message for debugging
+    res.status(500).json({ error: error.message || 'Database error' });
+  }
+});
+
+// 2c. Get Public Users (For Autocomplete)
+app.get('/api/users/public', authenticateToken, async (req, res) => {
+  try {
+    // Check if status column exists in users table to avoid 500 errors
+    const tableInfo = await query('PRAGMA table_info(users)');
+    const hasStatus = tableInfo.some(col => col.name === 'status');
+
+    let users;
+    if (hasStatus) {
+      users = await query('SELECT id, username, firstName, lastName, avatar FROM users WHERE status = ?', ['active']);
+    } else {
+      users = await query('SELECT id, username, firstName, lastName, avatar FROM users');
+    }
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching public users:', error);
     res.status(500).json({ error: 'Database error' });
   }
 });
@@ -930,10 +1238,10 @@ app.get('/api/parties/:id', authenticateToken, async (req, res) => {
 
     const expenses = await query('SELECT * FROM party_expenses WHERE party_id = ? ORDER BY date DESC', [partyId]);
     const members = await query(`
-      SELECT u.id, u.username, u.email, u.firstName, u.lastName, u.avatar 
+      SELECT u.id, u.username, u.email, u.firstName, u.lastName, u.avatar, pm.id as memberId, pm.invited_email, pm.status, pm.is_guest, pm.guest_name
       FROM party_members pm 
       LEFT JOIN users u ON pm.user_id = u.id 
-      WHERE pm.party_id = ? AND pm.status = 'accepted'
+      WHERE pm.party_id = ? AND (pm.status = 'accepted' OR pm.status = 'guest' OR pm.status = 'pending')
     `, [partyId]);
 
     res.json({ expenses, members });
@@ -956,6 +1264,150 @@ app.post('/api/parties/:id/expenses', authenticateToken, async (req, res) => {
     await run('INSERT INTO party_expenses (id, party_id, payer_id, amount, description, date, participants, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [expenseId, partyId, userId, amount, description, date, participantsJson, category]);
     res.json({ success: true, expenseId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// --- Party Installments & Extras ---
+
+// Get Party Installments
+app.get('/api/parties/:id/installments', authenticateToken, async (req, res) => {
+  const partyId = req.params.id;
+  try {
+    const plans = await query('SELECT * FROM installment_plans WHERE party_id = ?', [partyId]);
+    // Parse participants JSON
+    const parsed = plans.map(p => ({
+      ...p,
+      participants: p.participants ? JSON.parse(p.participants) : []
+    }));
+    res.json(parsed);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Create Installment Plan
+app.post('/api/parties/:id/installments', authenticateToken, async (req, res) => {
+  const { id: partyId } = req.params;
+  const { name, description, total_amount, installments_count, installment_amount, start_date, participants, currency, exchangeRate } = req.body;
+  const userId = req.user.id;
+
+  const finalName = name || description;
+
+  if (!finalName || !total_amount || !installments_count || !start_date || !participants) {
+    return res.status(400).json({ error: 'Faltan campos requeridos.' });
+  }
+
+  try {
+    const member = await get('SELECT status FROM party_members WHERE party_id = ? AND user_id = ?', [partyId, userId]);
+    if (!member) return res.status(403).json({ error: 'No eres miembro de este grupo.' });
+
+    const planId = uuidv4();
+    const participantsJson = JSON.stringify(participants);
+    const createdAt = Date.now();
+
+    // If installment_amount is not sent, calculate it
+    const calcInstallmentAmount = installment_amount || ((total_amount / (participants.length + 1)) / installments_count);
+
+    await run(
+      'INSERT INTO installment_plans (id, party_id, description, total_amount, installments_count, installment_amount, payer_id, participants, start_date, created_at, created_by, currency, exchange_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [planId, partyId, finalName, total_amount, installments_count, calcInstallmentAmount, userId, participantsJson, start_date, createdAt, userId, currency || 'ARS', exchangeRate || 1]
+    );
+
+    res.status(201).json({ success: true, id: planId });
+  } catch (error) {
+    console.error('Error creating installment plan:', error);
+    res.status(500).json({ error: error.message || 'Error en el servidor al crear el plan de cuotas.' });
+  }
+});
+
+// Update Party Installment Plan
+app.put('/api/parties/:id/installments/:planId', authenticateToken, async (req, res) => {
+  const { id, planId } = req.params; // partyId is id
+  const { name, total_amount, installments_count, installment_amount, start_date, description, participants } = req.body;
+
+  try {
+    const participantsJson = JSON.stringify(participants || []);
+    await run(`UPDATE installment_plans SET 
+      description=?, total_amount=?, installments_count=?, installment_amount=?, start_date=?, participants=?
+      WHERE id=? AND party_id=?`,
+      [name || description, total_amount, installments_count, installment_amount, start_date, participantsJson, planId, id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Delete Party Installment Plan
+app.delete('/api/parties/:id/installments/:planId', authenticateToken, async (req, res) => {
+  const { id, planId } = req.params;
+  try {
+    await run('DELETE FROM party_installment_plans WHERE id = ? AND party_id = ?', [planId, id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Get Nicknames
+app.get('/api/parties/:id/nicknames', authenticateToken, async (req, res) => {
+  const partyId = req.params.id;
+  try {
+    const rows = await query('SELECT member_id, nickname FROM party_nicknames WHERE party_id = ?', [partyId]);
+    const nicknames = {};
+    rows.forEach(r => nicknames[r.member_id] = r.nickname);
+    res.json({ nicknames });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Set Nickname
+app.put('/api/parties/:id/nicknames/:memberId', authenticateToken, async (req, res) => {
+  const { id, memberId } = req.params;
+  const { nickname } = req.body;
+  try {
+    await run(`INSERT INTO party_nicknames (party_id, member_id, nickname) VALUES (?, ?, ?)
+      ON CONFLICT(party_id, member_id) DO UPDATE SET nickname = excluded.nickname`,
+      [id, memberId, nickname]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Add Guest Member
+// Removed duplicate endpoint
+
+// 9. Delete Party
+app.delete('/api/parties/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const party = await get('SELECT created_by FROM parties WHERE id = ?', [id]);
+    if (!party) return res.status(404).json({ error: 'Party not found' });
+    if (party.created_by !== userId) return res.status(403).json({ error: 'Not authorized' });
+
+    // Delete everything related to party
+    // Note: With foreign keys ON DELETE CASCADE, most of this is automatic,
+    // but we do it explicitly to be safe and ensure older SQLite versions behave.
+    await run('DELETE FROM party_expenses WHERE party_id = ?', [id]);
+    await run('DELETE FROM party_members WHERE party_id = ?', [id]);
+    await run('DELETE FROM party_nicknames WHERE party_id = ?', [id]);
+
+    try { await run('DELETE FROM party_installment_plans WHERE party_id = ?', [id]); } catch (e) { }
+
+    await run('DELETE FROM parties WHERE id = ?', [id]);
+    res.json({ success: true });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Database error' });
@@ -1014,6 +1466,31 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// D1 Sync Endpoint (Development Only)
+app.post('/api/admin/sync-from-d1', authenticateToken, async (req, res) => {
+  // Only allow in development/localhost
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Not available in production' });
+  }
+
+  try {
+    const { execSync } = await import('child_process');
+    const scriptPath = path.join(__dirname, '../scripts/sync-db.cjs');
+
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(404).json({ error: 'Sync script not found' });
+    }
+
+    console.log('🔄 Starting D1 sync from production...');
+    execSync(`node "${scriptPath}"`, { stdio: 'inherit', cwd: path.join(__dirname, '..') });
+
+    res.json({ success: true, message: 'Database synced successfully from D1' });
+  } catch (error) {
+    console.error('Sync error:', error);
+    res.status(500).json({ error: error.message || 'Sync failed' });
   }
 });
 

@@ -114,7 +114,7 @@ export const MetasView: React.FC<MetasViewProps> = ({
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 mt-6">
+    <div className="space-y-8 animate-in fade-in duration-500 mt-2 lg:mt-8">
 
       {/* Tab Switcher */}
       <div className="flex p-1 bg-slate-900/50 backdrop-blur-md rounded-2xl w-fit border border-white/5">
@@ -215,37 +215,67 @@ export const MetasView: React.FC<MetasViewProps> = ({
         <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300">
           <Card title={viewingGoal.name} subtitle="Detalle de Ahorros e Inversiones" className="w-full max-w-2xl border border-white/10 shadow-2xl h-[80vh] flex flex-col">
             <div className="flex-1 overflow-y-auto custom-scrollbar p-1">
-              {getGoalContributions(viewingGoal.id).length === 0 ? (
-                <div className="text-center p-10 text-slate-500">
-                  <i className="fas fa-piggy-bank text-4xl mb-4 opacity-20"></i>
-                  <p>No hay ahorros asignados a esta meta aún.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {getGoalContributions(viewingGoal.id).map(entry => (
-                    <div key={entry.id} className="bg-slate-900/50 p-4 rounded-2xl border border-white/5 flex justify-between items-center">
-                      <div>
-                        <p className="font-bold text-white">{entry.name}</p>
-                        <div className="flex gap-4 mt-1">
-                          <span className="text-xs text-slate-500 font-bold uppercase">
-                            <i className="fas fa-calendar mr-1"></i>
-                            Registrado: {formatDate(entry.date)}
-                          </span>
-                          {entry.maturityDate && (
-                            <span className="text-xs text-emerald-400 font-bold uppercase">
-                              <i className="fas fa-clock mr-1"></i>
-                              Disponible: {formatDate(entry.maturityDate)}
-                            </span>
-                          )}
-                        </div>
+              {(() => {
+                const contributions = getGoalContributions(viewingGoal.id);
+                const totalContributions = contributions.reduce((sum, c) => sum + c.amount, 0);
+                const initialBalance = viewingGoal.currentAmount - totalContributions;
+
+                return (
+                  <>
+                    {contributions.length === 0 && initialBalance === 0 ? (
+                      <div className="text-center p-10 text-slate-500">
+                        <i className="fas fa-piggy-bank text-4xl mb-4 opacity-20"></i>
+                        <p>No hay ahorros asignados a esta meta aún.</p>
                       </div>
-                      <span className="font-black text-emerald-400 text-lg">
-                        {formatMoney(entry.amount)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ) : (
+                      <div className="space-y-4">
+                        {/* Saldo Inicial / Ajuste Manual */}
+                        {initialBalance !== 0 && (
+                          <div className="bg-slate-900/50 p-4 rounded-2xl border border-white/5 flex justify-between items-center relative overflow-hidden">
+                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-slate-500/50"></div>
+                            <div>
+                              <p className="font-bold text-white">Saldo Inicial / Ajuste Manual</p>
+                              <div className="flex gap-4 mt-1">
+                                <span className="text-xs text-slate-500 font-bold uppercase">
+                                  <i className="fas fa-info-circle mr-1"></i>
+                                  {initialBalance > 0 ? 'Fondo previo' : 'Ajuste negativo'}
+                                </span>
+                              </div>
+                            </div>
+                            <span className={`font-black text-lg ${initialBalance > 0 ? 'text-slate-300' : 'text-rose-400'}`}>
+                              {formatMoney(initialBalance)}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Lista de Contribuciones */}
+                        {contributions.map(entry => (
+                          <div key={entry.id} className="bg-slate-900/50 p-4 rounded-2xl border border-white/5 flex justify-between items-center group/item hover:bg-slate-800 transition-colors">
+                            <div>
+                              <p className="font-bold text-white">{entry.name}</p>
+                              <div className="flex gap-4 mt-1">
+                                <span className="text-xs text-slate-500 font-bold uppercase group-hover/item:text-slate-400 transition-colors">
+                                  <i className="fas fa-calendar mr-1"></i>
+                                  Registrado: {formatDate(entry.date)}
+                                </span>
+                                {entry.maturityDate && (
+                                  <span className="text-xs text-emerald-400 font-bold uppercase">
+                                    <i className="fas fa-clock mr-1"></i>
+                                    Disponible: {formatDate(entry.maturityDate)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <span className="font-black text-emerald-400 text-lg">
+                              {formatMoney(entry.amount)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             <div className="pt-6 mt-4 border-t border-white/5 flex justify-end">
               <button
