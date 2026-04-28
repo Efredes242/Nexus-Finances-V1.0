@@ -33,7 +33,7 @@ import { APP_TITLE_PREFIX, APP_TITLE_SUFFIX, APP_SUBTITLE } from './config/const
 import { parseDocument } from './services/geminiService';
 import { api } from './services/api';
 import { exportToExcel } from './utils/excelExport';
-import { generateUUID } from './utils/helpers';
+import { generateUUID, isUsdTargetEntry } from './utils/helpers';
 import { OnboardingModal } from './components/OnboardingModal';
 import { UpdateDetailModal } from './components/UpdateDetailModal';
 import { AppUpdate } from './config/updates';
@@ -646,7 +646,14 @@ const App: React.FC = () => {
         return remA - remB;
       });
       const aggId = `card-agg-${user?.id || 'null'}-${key}-${state.currentMonth}`;
-      const categoryLabel = data.category === CategoryType.FIXED_EXPENSE ? ' (Fijos)' : '';
+      // Una misma tarjeta puede tener consumos en distintas categorías (Fijos / Variables / Deudas).
+      // Etiquetamos siempre la categoría para que no se confundan al verse repetidos en la misma vista.
+      const categoryLabel =
+        data.category === CategoryType.FIXED_EXPENSE ? ' (Fijos)' :
+        data.category === CategoryType.VARIABLE_EXPENSE ? ' (Variables)' :
+        data.category === CategoryType.DEBT ? ' (Deudas)' :
+        data.category === CategoryType.SAVINGS ? ' (Ahorros)' :
+        '';
       installmentEntries.push({
         id: aggId,
         name: data.cardName === 'Otros' ? `Consumo Tarjeta${categoryLabel}` : `Consumo ${data.cardName}${categoryLabel}`,
@@ -828,35 +835,18 @@ const App: React.FC = () => {
     }
   };
 
-  // Predicado compartido entre `handleApplyDolarRate` (acción) y `usdEntriesCount` (contador en
-  // el botón). Mantenerlos alineados es crítico: si el contador dice 5 pero la acción toca 3,
-  // confunde al usuario. Itera SIEMPRE `state.budgets[month].entries` (entries reales en DB),
-  // no `currentBudgetEntries` que mete agregadores virtuales como `card-agg-*`.
-  const isUsdTargetEntry = (e: BudgetEntry): boolean => (
-    e.currency === 'USD' &&
-    typeof e.originalAmount === 'number' &&
-    (e.originalAmount as number) > 0 &&
-    !e.deleted &&
-    !e.id.startsWith('card-agg-') &&
-    !e.id.startsWith('inst-') &&
-    !e.id.startsWith('shared-') &&
-    !e.id.startsWith('virt-')
-  );
-
-  const usdEntriesCount = useMemo(() => {
-    const monthBudget = state.budgets[state.currentMonth];
-    if (!monthBudget?.entries?.length) return 0;
-    return monthBudget.entries.filter(isUsdTargetEntry).length;
-  }, [state.budgets, state.currentMonth]);
-
-  // Aplica una cotización (BBVA Compra / proxy de Brubank) a TODOS los movimientos USD
+  // Aplica una cotización (BBVA Compra / proxy de Brubank) a los movimientos USD
   // del mes visible. Recalcula el total en ARS = originalAmount * rate y persiste cada uno.
-  const handleApplyDolarRate = async (rate: number): Promise<{ updatedCount: number }> => {
+  // Si `categoryFilter` se pasa (distinto de 'ALL'), sólo toca las entries de esa categoría —
+  // así el botón "Aplicar" respeta el filtro que el usuario tiene activo en la pantalla.
+  const handleApplyDolarRate = async (rate: number, categoryFilter?: string): Promise<{ updatedCount: number }> => {
     const month = state.currentMonth;
     const monthBudget = state.budgets[month];
     if (!monthBudget?.entries?.length) return { updatedCount: 0 };
 
-    const targets = monthBudget.entries.filter(isUsdTargetEntry);
+    const targets = monthBudget.entries
+      .filter(isUsdTargetEntry)
+      .filter(e => !categoryFilter || categoryFilter === 'ALL' || e.category === categoryFilter);
 
     if (targets.length === 0) return { updatedCount: 0 };
 
@@ -1554,7 +1544,7 @@ const App: React.FC = () => {
           initialViewMode={state.config.viewMode || 'monthly'}
           applications={state.config.applications || []}
           onApplyDolarRate={handleApplyDolarRate}
-          usdEntriesCount={usdEntriesCount}
+          monthRawEntries={state.budgets[state.currentMonth]?.entries || []}
         />
       )}
 

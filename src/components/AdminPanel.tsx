@@ -62,6 +62,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Mini-dropdown para cambiar rol inline. Guarda el userId que tiene el dropdown abierto.
+  const [roleMenuOpenFor, setRoleMenuOpenFor] = useState<string | null>(null);
+  const [updatingRoleFor, setUpdatingRoleFor] = useState<string | null>(null);
 
   // Fetch users from API
   useEffect(() => {
@@ -140,6 +143,34 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
     } catch (e: any) {
       console.error('Error rejecting user:', e);
       alert('Error al rechazar usuario: ' + e.message);
+    }
+  };
+
+  const handleChangeRole = async (userId: string, newRole: 'admin' | 'user') => {
+    try {
+      setUpdatingRoleFor(userId);
+      const response = await fetch(`${getApiUrl()}/admin/users/${userId}/role`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({})) as any;
+        throw new Error(errorData.error || `Failed to update role (${response.status})`);
+      }
+
+      // Optimistic local update — backend ya confirmó
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+      setRoleMenuOpenFor(null);
+    } catch (e: any) {
+      console.error('Error updating role:', e);
+      alert('Error al cambiar el rol: ' + e.message);
+    } finally {
+      setUpdatingRoleFor(null);
     }
   };
 
@@ -377,7 +408,49 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                       </div>
                     </td>
                     <td className="hidden md:table-cell px-6 py-4">
-                      {getRoleBadge(user.role)}
+                      <div className="relative inline-block">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRoleMenuOpenFor(prev => prev === user.id ? null : user.id);
+                          }}
+                          disabled={updatingRoleFor === user.id}
+                          className="flex items-center gap-1 hover:opacity-80 transition-opacity disabled:opacity-50 cursor-pointer"
+                          title="Click para cambiar rol"
+                        >
+                          {getRoleBadge(user.role)}
+                          <span className="text-slate-500 text-[9px]">▾</span>
+                        </button>
+                        {roleMenuOpenFor === user.id && (
+                          <>
+                            <div
+                              className="fixed inset-0 z-30"
+                              onClick={() => setRoleMenuOpenFor(null)}
+                            />
+                            <div className="absolute z-40 mt-1 left-0 min-w-[140px] bg-[#0d1117] border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+                              {(['admin', 'user'] as const).map(r => {
+                                const isCurrent = user.role.toLowerCase() === r;
+                                return (
+                                  <button
+                                    key={r}
+                                    type="button"
+                                    onClick={() => !isCurrent && handleChangeRole(user.id, r)}
+                                    disabled={isCurrent}
+                                    className={`w-full text-left px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition-colors ${isCurrent
+                                      ? 'bg-slate-800/50 text-slate-500 cursor-default'
+                                      : 'text-white hover:bg-teal-500/10 hover:text-teal-400'
+                                      }`}
+                                  >
+                                    {r === 'admin' ? '🛡 Admin' : '👤 User'}
+                                    {isCurrent && <span className="ml-2 text-[9px] text-slate-600">(actual)</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className={`inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full border text-[10px] font-bold uppercase tracking-wider ${getStatusStyles(user.approval_status).container}`}>
@@ -385,12 +458,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                         {status}
                       </div>
                     </td>
-                    <td className="hidden lg:table-cell px-6 py-4">
+                    <td className="hidden lg:table-cell px-6 py-4" title={`ID: ${user.id}`}>
                       <div className="flex flex-col gap-1 text-[11px]">
                         <span className="text-slate-300 font-medium">
                           {user.created_at ? new Date(user.created_at).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Desconocido'}
                         </span>
-                        <span className="text-slate-500 italic">ID: {user.id.slice(0, 8)}</span>
                       </div>
                     </td>
                     <td className="hidden xl:table-cell px-6 py-4">

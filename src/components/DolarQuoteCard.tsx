@@ -4,6 +4,9 @@ import { fetchBbvaQuote, BbvaQuote } from '../services/dolar';
 interface Props {
   onApply: (rate: number) => Promise<{ updatedCount: number }>;
   pendingUsdCount: number;
+  // Si la pantalla está filtrada por categoría, este es el nombre — sirve para que
+  // el botón y el modal aclaren a qué scope se va a aplicar.
+  scopeLabel?: string;
 }
 
 const formatRate = (n: number) => n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -19,7 +22,7 @@ const formatRelativeTime = (sourceTimeSec: number): string => {
   return `hace ${d} d`;
 };
 
-export const DolarQuoteCard: React.FC<Props> = ({ onApply, pendingUsdCount }) => {
+export const DolarQuoteCard: React.FC<Props> = ({ onApply, pendingUsdCount, scopeLabel }) => {
   const [quote, setQuote] = useState<BbvaQuote | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +121,13 @@ export const DolarQuoteCard: React.FC<Props> = ({ onApply, pendingUsdCount }) =>
           onClick={() => setConfirmOpen(true)}
           disabled={!quote || pendingUsdCount === 0}
           className="px-3 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-white border border-emerald-500/30 text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 flex-shrink-0"
-          title={pendingUsdCount === 0 ? 'No hay movimientos USD en el mes' : `Aplicar a ${pendingUsdCount} movimiento(s) USD del mes`}
+          title={
+            pendingUsdCount === 0
+              ? (scopeLabel ? `No hay movimientos USD en "${scopeLabel}" este mes` : 'No hay movimientos USD en el mes')
+              : (scopeLabel
+                  ? `Aplicar a ${pendingUsdCount} movimiento(s) USD en "${scopeLabel}"`
+                  : `Aplicar a ${pendingUsdCount} movimiento(s) USD del mes`)
+          }
         >
           <i className="fas fa-bolt text-[10px]"></i>
           Aplicar
@@ -154,7 +163,9 @@ export const DolarQuoteCard: React.FC<Props> = ({ onApply, pendingUsdCount }) =>
                   <span className="text-2xl font-black text-emerald-400">${formatRate(quote.compra)}</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Movimientos USD del mes</span>
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    {scopeLabel ? `Movimientos USD en "${scopeLabel}"` : 'Movimientos USD del mes'}
+                  </span>
                   <span className="text-base font-black text-white">{pendingUsdCount}</span>
                 </div>
                 {quote.stale && (
@@ -168,7 +179,11 @@ export const DolarQuoteCard: React.FC<Props> = ({ onApply, pendingUsdCount }) =>
               </div>
 
               <p className="text-xs text-slate-400 leading-relaxed">
-                Esta acción va a reemplazar la <span className="font-bold text-white">Cotiz. Real (Compra)</span> de todos los movimientos en USD del mes que estás viendo. Los totales en ARS se recalculan automáticamente.
+                Esta acción va a reemplazar la <span className="font-bold text-white">Cotiz. Real (Compra)</span> de los movimientos en USD
+                {scopeLabel
+                  ? <> de la categoría <span className="font-bold text-white">{scopeLabel}</span> en el mes que estás viendo.</>
+                  : <> del mes que estás viendo.</>
+                } Los totales en ARS se recalculan automáticamente.
               </p>
 
               <div className="flex gap-3 pt-2">

@@ -5,7 +5,7 @@ import { Card } from '../components/Card';
 import { Tooltip } from '../components/Tooltip';
 import { CategoryType, TransactionStatus, PaymentMethod, BudgetEntry, AppState, InstallmentPurchase } from '../types';
 import { categoryConfig } from '../config/constants';
-import { generateUUID } from '../utils/helpers';
+import { generateUUID, isUsdTargetEntry } from '../utils/helpers';
 import { SharedExpensesAPB } from '../components/SharedExpensesAPB';
 import { DolarQuoteCard } from '../components/DolarQuoteCard';
 
@@ -35,8 +35,10 @@ interface PresupuestoViewProps {
   applications?: string[];
   navigate?: (tab: any, params?: any) => void;
   allEntries: BudgetEntry[];
-  onApplyDolarRate: (rate: number) => Promise<{ updatedCount: number }>;
-  usdEntriesCount: number;
+  onApplyDolarRate: (rate: number, categoryFilter?: string) => Promise<{ updatedCount: number }>;
+  // Raw entries de la DB del mes visible (sin agregadores virtuales). Necesario para
+  // que el botón "Aplicar" cuente sólo los USD reales y respete el filtro de categoría.
+  monthRawEntries: BudgetEntry[];
 }
 
 export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
@@ -66,7 +68,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
   allEntries,
   applications = [],
   onApplyDolarRate,
-  usdEntriesCount
+  monthRawEntries
 }: PresupuestoViewProps) => {
   // Vibrant high-contrast colors for income sources (contrasting with dark blue background)
   const incomeColors = [
@@ -195,6 +197,15 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
       .reduce((acc, cat) => acc + (currentTotals[cat] || 0), 0);
   }, [currentTotals, filterCategory]);
 
+  // Cuenta movimientos USD del mes visible respetando el filtro de categoría activo.
+  // Si filterCategory === 'ALL', cuenta todos. Si está filtrado, sólo los USD de esa categoría.
+  const usdEntriesCount = useMemo(() => {
+    return monthRawEntries
+      .filter(isUsdTargetEntry)
+      .filter(e => filterCategory === 'ALL' || e.category === filterCategory)
+      .length;
+  }, [monthRawEntries, filterCategory]);
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500 mt-2 lg:mt-6 pb-32 lg:pb-8">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center lg:px-4 gap-4">
@@ -230,7 +241,11 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
         </div>
 
         <div className="flex-1 flex justify-center w-full sm:w-auto">
-          <DolarQuoteCard onApply={onApplyDolarRate} pendingUsdCount={usdEntriesCount} />
+          <DolarQuoteCard
+            onApply={(rate) => onApplyDolarRate(rate, filterCategory)}
+            pendingUsdCount={usdEntriesCount}
+            scopeLabel={filterCategory === 'ALL' ? undefined : filterCategory}
+          />
         </div>
 
         <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">

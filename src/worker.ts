@@ -1486,6 +1486,39 @@ app.get('/api/admin/pending-count', authMiddleware, adminMiddleware, async (c) =
     }
 });
 
+// Change user role (Admin only) — toggle entre 'admin' y 'user'
+app.put('/api/admin/users/:userId/role', authMiddleware, adminMiddleware, async (c) => {
+    const userId = c.req.param('userId');
+    const admin = c.get('user');
+
+    let body: any;
+    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+    const role = body?.role;
+    const ALLOWED_ROLES = ['admin', 'user'];
+    if (!ALLOWED_ROLES.includes(role)) {
+        return c.json({ error: `Invalid role. Allowed: ${ALLOWED_ROLES.join(', ')}` }, 400);
+    }
+
+    // Defensa básica: el super-admin nunca debería poder degradarse a user a sí mismo
+    // por error y quedarse sin acceso al panel. Bloqueo explícito.
+    if (admin.id === userId && role !== 'admin') {
+        return c.json({ error: 'No podés cambiar tu propio rol de admin' }, 403);
+    }
+
+    try {
+        const exists = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+        if (!exists) return c.json({ error: 'User not found' }, 404);
+
+        await c.env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, userId).run();
+        console.log(`[PUT /api/admin/users/${userId}/role] role=${role} by ${admin.email}`);
+        return c.json({ success: true, role });
+    } catch (e: any) {
+        console.error(`[PUT /api/admin/users/${userId}/role] Error:`, e);
+        return c.json({ error: 'Database error' }, 500);
+    }
+});
+
 // Approve user (Admin only)
 app.post('/api/admin/users/:userId/approve', authMiddleware, adminMiddleware, async (c) => {
     const userId = c.req.param('userId');
