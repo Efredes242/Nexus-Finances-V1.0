@@ -34,6 +34,7 @@ import { parseDocument } from './services/geminiService';
 import { api } from './services/api';
 import { exportToExcel } from './utils/excelExport';
 import { generateUUID, isUsdTargetEntry } from './utils/helpers';
+import { useToast } from './components/Toast';
 import { OnboardingModal } from './components/OnboardingModal';
 import { UpdateDetailModal } from './components/UpdateDetailModal';
 import { AppUpdate } from './config/updates';
@@ -153,6 +154,8 @@ const App: React.FC = () => {
 
   // --- COLLAPSED CATEGORIES ---
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+
+  const toast = useToast();
 
   const formatMoney = (amount: number) => {
     if (privacyMode) return '****';
@@ -831,7 +834,7 @@ const App: React.FC = () => {
       setEditingEntry(null);
     } catch (e: any) {
       console.error("Failed to save entry:", e);
-      alert("Error al guardar el movimiento.");
+      toast.error("Error al guardar el movimiento.");
     }
   };
 
@@ -1113,12 +1116,12 @@ const App: React.FC = () => {
             }
           };
         });
-        alert(`¡Éxito! Se han importado ${newEntries.length} movimientos.`);
+        toast.success(`Se importaron ${newEntries.length} movimientos.`);
       };
       reader.readAsDataURL(file);
     } catch (err) {
       console.error(err);
-      alert("Error al procesar el documento con IA.");
+      toast.error("Error al procesar el documento con IA.");
     } finally {
       setIsParsing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';

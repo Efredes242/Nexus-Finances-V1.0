@@ -3,6 +3,7 @@ import { BudgetEntry, CategoryType, PaymentMethod, SavingsGoal } from '../types'
 import { PREDEFINED_CARDS } from '../utils/helpers';
 import { Card } from './Card';
 import { Button } from './Button';
+import { useToast } from './Toast';
 
 interface EntryModalProps {
   entry: BudgetEntry;
@@ -46,6 +47,8 @@ export const EntryModal: React.FC<EntryModalProps> = ({
   viewMode = 'monthly',
   allEntries
 }) => {
+  const toast = useToast();
+
   const [localEntry, setLocalEntry] = useState<BudgetEntry>({
     ...entry,
     currency: entry.currency || 'ARS'
@@ -205,7 +208,7 @@ export const EntryModal: React.FC<EntryModalProps> = ({
     // Bloquear guardado si hay errores de input numérico pendientes — evitamos persistir
     // datos parciales o un valor "viejo" que el usuario creía haber actualizado.
     if (numericErrors.size > 0) {
-      alert('Hay campos con valores inválidos. Corregilos antes de guardar.');
+      toast.error('Hay campos con valores inválidos. Corregilos antes de guardar.');
       return;
     }
 
@@ -213,7 +216,7 @@ export const EntryModal: React.FC<EntryModalProps> = ({
 
     if (isAddingTag) {
       if (!newTag.trim()) {
-        alert("Por favor ingresa un nombre para la nueva etiqueta");
+        toast.error("Ingresá un nombre para la nueva etiqueta.");
         return;
       }
       finalTag = newTag.trim();
@@ -221,7 +224,7 @@ export const EntryModal: React.FC<EntryModalProps> = ({
 
     if (localEntry.paymentMethod === PaymentMethod.CREDIT && isAddingCard) {
       if (!cardEntity.trim()) {
-        alert("Por favor ingresa la entidad de la tarjeta (ej. Galicia, Santander)");
+        toast.error("Ingresá la entidad de la tarjeta (ej. Galicia, Santander).");
         return;
       }
       const newCardName = `${cardType} ${cardEntity.trim().toUpperCase()}`;

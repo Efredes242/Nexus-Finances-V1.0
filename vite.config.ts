@@ -40,5 +40,22 @@ export default defineConfig(({ mode }) => {
         buffer: "buffer",
       }
     },
+    build: {
+      // Separar libs grandes en chunks dedicados para que cambios en código de la app
+      // no invaliden el cache del navegador para vendor (recharts, lucide, etc.).
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-react': ['react', 'react-dom'],
+            'vendor-charts': ['recharts'],
+            'vendor-icons': ['lucide-react'],
+            'vendor-xlsx': ['xlsx', 'xlsx-js-style'],
+          },
+        },
+      },
+      // Subimos el threshold porque la app tiene varios chunks grandes intencionalmente
+      // (charts + xlsx + etc.); el warning puro no aporta señal útil.
+      chunkSizeWarningLimit: 800,
+    },
   };
 });

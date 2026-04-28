@@ -1,0 +1,43 @@
+name: CI
+
+# Verifica que cada push y PR a main:
+#   1) los tipos de TypeScript chequeen sin errores
+#   2) el build de Vite produzca un bundle sin romper
+# NO hace deploy — el deploy sigue siendo manual con `wrangler pages deploy dist`
+# para que un push accidental no afecte producción sin revisión.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build (vite)
+        run: npm run build
+
+      - name: Upload dist as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
