@@ -39,19 +39,19 @@ export const getThemeColors = () => {
             ? 'text-teal-400'
             : 'text-blue-400',
 
-        // Backgrounds
+        // Backgrounds — paleta unificada con Admin Panel (github-dark)
         background: theme === 'new'
-            ? 'bg-[#020617]' // Slate 950 (Darker for New)
+            ? 'bg-[#05070a]' // Casi negro absoluto, igual que Admin Panel
             : 'bg-[#0f172a]', // Slate 900 (Original)
 
         card: theme === 'new'
-            ? 'bg-[#0f172a]' // Slate 900
+            ? 'bg-[#0d1117]' // GitHub dark — superficie de card en Admin Panel
             : 'bg-[#1e293b]', // Slate 800
 
         text: 'text-slate-300', // Shared for now
 
         input: theme === 'new'
-            ? 'bg-slate-900/50 border-slate-800 focus:border-teal-500'
+            ? 'bg-[#161b22] border-slate-800/60 focus:border-teal-500'
             : 'bg-slate-900/50 border-slate-700 focus:border-blue-500',
 
         accent: theme === 'new'
@@ -59,12 +59,12 @@ export const getThemeColors = () => {
             : 'text-blue-400',
 
         border: theme === 'new'
-            ? 'border-slate-800'
+            ? 'border-slate-800/60'
             : 'border-slate-700',
 
         // Sidebar specific
         sidebarBg: theme === 'new'
-            ? 'bg-[#020617]/90'
+            ? 'bg-[#05070a]/95'
             : 'bg-[#0f172a]/90',
 
         logoGradient: theme === 'new'
