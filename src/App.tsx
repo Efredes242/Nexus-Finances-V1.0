@@ -156,7 +156,13 @@ const App: React.FC = () => {
 
   const formatMoney = (amount: number) => {
     if (privacyMode) return '****';
-    return state.config.currency + amount.toLocaleString();
+    // Force es-AR locale (point thousands, comma decimal) and exactly 2 decimals,
+    // independent of browser locale. Prevents 3-decimal artifacts from float math.
+    const formatted = (amount || 0).toLocaleString('es-AR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    return state.config.currency + formatted;
   };
 
   // --- PENDING INVITES STATE ---
@@ -772,10 +778,14 @@ const App: React.FC = () => {
       data.push({
         name: capitalizedMonth,
         Ingresos: inc,
-        Gastos: exp
+        Gastos: exp,
+        // Marcamos si es el mes actual para mantenerlo siempre, aunque esté en cero.
+        _isCurrent: mStr === state.currentMonth,
       });
     }
-    return data;
+    // Filtrar meses históricos sin movimientos para que el chart no muestre líneas planas en cero.
+    // Mantenemos siempre el mes actual aunque esté vacío.
+    return data.filter(d => d._isCurrent || d.Ingresos > 0 || d.Gastos > 0);
   }, [state.budgets, state.currentMonth, currentTotals]);
 
   const saveEntry = async (entry: BudgetEntry) => {
@@ -818,6 +828,27 @@ const App: React.FC = () => {
     }
   };
 
+  // Predicado compartido entre `handleApplyDolarRate` (acción) y `usdEntriesCount` (contador en
+  // el botón). Mantenerlos alineados es crítico: si el contador dice 5 pero la acción toca 3,
+  // confunde al usuario. Itera SIEMPRE `state.budgets[month].entries` (entries reales en DB),
+  // no `currentBudgetEntries` que mete agregadores virtuales como `card-agg-*`.
+  const isUsdTargetEntry = (e: BudgetEntry): boolean => (
+    e.currency === 'USD' &&
+    typeof e.originalAmount === 'number' &&
+    (e.originalAmount as number) > 0 &&
+    !e.deleted &&
+    !e.id.startsWith('card-agg-') &&
+    !e.id.startsWith('inst-') &&
+    !e.id.startsWith('shared-') &&
+    !e.id.startsWith('virt-')
+  );
+
+  const usdEntriesCount = useMemo(() => {
+    const monthBudget = state.budgets[state.currentMonth];
+    if (!monthBudget?.entries?.length) return 0;
+    return monthBudget.entries.filter(isUsdTargetEntry).length;
+  }, [state.budgets, state.currentMonth]);
+
   // Aplica una cotización (BBVA Compra / proxy de Brubank) a TODOS los movimientos USD
   // del mes visible. Recalcula el total en ARS = originalAmount * rate y persiste cada uno.
   const handleApplyDolarRate = async (rate: number): Promise<{ updatedCount: number }> => {
@@ -825,16 +856,7 @@ const App: React.FC = () => {
     const monthBudget = state.budgets[month];
     if (!monthBudget?.entries?.length) return { updatedCount: 0 };
 
-    const targets = monthBudget.entries.filter(e =>
-      e.currency === 'USD' &&
-      typeof e.originalAmount === 'number' &&
-      (e.originalAmount as number) > 0 &&
-      !e.deleted &&
-      !e.id.startsWith('card-agg-') &&
-      !e.id.startsWith('inst-') &&
-      !e.id.startsWith('shared-') &&
-      !e.id.startsWith('virt-')
-    );
+    const targets = monthBudget.entries.filter(isUsdTargetEntry);
 
     if (targets.length === 0) return { updatedCount: 0 };
 
@@ -1532,6 +1554,7 @@ const App: React.FC = () => {
           initialViewMode={state.config.viewMode || 'monthly'}
           applications={state.config.applications || []}
           onApplyDolarRate={handleApplyDolarRate}
+          usdEntriesCount={usdEntriesCount}
         />
       )}
 

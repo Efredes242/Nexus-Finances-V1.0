@@ -36,6 +36,7 @@ interface PresupuestoViewProps {
   navigate?: (tab: any, params?: any) => void;
   allEntries: BudgetEntry[];
   onApplyDolarRate: (rate: number) => Promise<{ updatedCount: number }>;
+  usdEntriesCount: number;
 }
 
 export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
@@ -64,7 +65,8 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
   navigate,
   allEntries,
   applications = [],
-  onApplyDolarRate
+  onApplyDolarRate,
+  usdEntriesCount
 }: PresupuestoViewProps) => {
   // Vibrant high-contrast colors for income sources (contrasting with dark blue background)
   const incomeColors = [
@@ -192,21 +194,6 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
       .filter(cat => filterCategory === 'ALL' || cat === filterCategory)
       .reduce((acc, cat) => acc + (currentTotals[cat] || 0), 0);
   }, [currentTotals, filterCategory]);
-
-  // Cantidad de movimientos en USD del mes visible — usado por DolarQuoteCard para mostrar
-  // a cuántos items se va a aplicar la cotización al confirmar.
-  const usdEntriesCount = useMemo(() => {
-    return currentBudgetEntries.filter(e =>
-      e.currency === 'USD' &&
-      typeof e.originalAmount === 'number' &&
-      e.originalAmount > 0 &&
-      !e.deleted &&
-      !e.id.startsWith('card-agg-') &&
-      !e.id.startsWith('inst-') &&
-      !e.id.startsWith('shared-') &&
-      !e.id.startsWith('virt-')
-    ).length;
-  }, [currentBudgetEntries]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 mt-2 lg:mt-6 pb-32 lg:pb-8">

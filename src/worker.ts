@@ -20,10 +20,12 @@ const app = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 app.use('*', logger());
 app.use('*', cors({
     origin: (origin) => {
-        if (origin.endsWith('pages.dev') || origin.endsWith('ezequielfredes.com.ar') || origin.includes('localhost')) {
+        if (!origin) return null;
+        if (origin.endsWith('pages.dev') || origin.endsWith('ezequielfredes.com.ar') || origin.includes('localhost') || origin.startsWith('http://127.0.0.1')) {
             return origin;
         }
-        return origin; // Fallback to echo origin or specific default
+        // Origin not in whitelist — reject. Do NOT echo back unknown origins; that defeats CORS.
+        return null;
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
@@ -32,7 +34,14 @@ app.use('*', cors({
     credentials: true,
 }));
 
-const getJwtSecret = (c: any) => c.env.JWT_SECRET || 'super_secret_key_change_me';
+const getJwtSecret = (c: any): string => {
+    const secret = c.env.JWT_SECRET;
+    if (!secret) {
+        // Fail loud — running without a real secret would let anyone forge tokens.
+        throw new Error('JWT_SECRET is not configured. Set it via `wrangler secret put JWT_SECRET`.');
+    }
+    return secret;
+};
 
 // Auth Middleware
 const authMiddleware = async (c: any, next: any) => {
@@ -45,7 +54,9 @@ const authMiddleware = async (c: any, next: any) => {
         c.set('user', payload);
         await next();
     } catch (e) {
-        return c.json({ error: 'Invalid Token' }, 403);
+        // Token expired / signed with rotated secret / malformed → re-authenticate.
+        // 401 (not 403) so the frontend's `handleResponse` triggers auto-logout.
+        return c.json({ error: 'Invalid or expired token' }, 401);
     }
 };
 
@@ -714,9 +725,23 @@ app.put('/api/parties/:partyId/installments/:id', authMiddleware, async (c) => {
     }
 });
 
-// Delete Installment Plan
+// Delete Installment Plan — must be a member of the party that owns the plan
 app.delete('/api/parties/:partyId/installments/:id', authMiddleware, async (c) => {
-    const { id } = c.req.param();
+    const user = c.get('user');
+    const { partyId, id } = c.req.param();
+
+    // Verify the plan belongs to the party AND the user is a member of that party.
+    const planRow = await c.env.DB.prepare(
+        'SELECT party_id FROM installment_plans WHERE id = ?'
+    ).bind(id).first() as { party_id?: string } | null;
+    if (!planRow) return c.json({ error: 'Plan not found' }, 404);
+    if (planRow.party_id !== partyId) return c.json({ error: 'Plan does not belong to this party' }, 403);
+
+    const membership = await c.env.DB.prepare(
+        "SELECT id FROM party_members WHERE party_id = ? AND user_id = ? AND status = 'accepted'"
+    ).bind(partyId, user.id).first();
+    if (!membership) return c.json({ error: 'Forbidden: not a member of this party' }, 403);
+
     await c.env.DB.prepare('DELETE FROM installment_plans WHERE id = ?').bind(id).run();
     return c.json({ success: true });
 });
@@ -929,8 +954,8 @@ app.post('/api/parties/:id/guests', authMiddleware, async (c) => {
     }
 });
 
-// DEBUG: Get Users List
-app.get('/api/debug/users', async (c) => {
+// DEBUG: Get Users List — admin only
+app.get('/api/debug/users', authMiddleware, adminMiddleware, async (c) => {
     try {
         const users = await c.env.DB.prepare('SELECT id, username, email, avatar FROM users LIMIT 100').all();
         return c.json(users.results);
@@ -939,8 +964,8 @@ app.get('/api/debug/users', async (c) => {
     }
 });
 
-// DEBUG: Get Pending Invitations List
-app.get('/api/debug/invitations', async (c) => {
+// DEBUG: Get Pending Invitations List — admin only
+app.get('/api/debug/invitations', authMiddleware, adminMiddleware, async (c) => {
     try {
         const invites = await c.env.DB.prepare('SELECT * FROM party_members WHERE status = "pending" LIMIT 100').all();
         return c.json(invites.results);

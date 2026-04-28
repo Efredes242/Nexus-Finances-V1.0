@@ -93,8 +93,12 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
         </div>
 
-        {/* Header Superior con Selectores SLOT */}
-        {header}
+        {/* Header Superior con Selectores SLOT — desktop only.
+            En mobile usamos el "Mobile Header Bar" de arriba; renderizar ambos
+            duplica los selects año/mes y solapa el bloque de "Ingresos Mes". */}
+        <div className="hidden lg:block">
+          {header}
+        </div>
 
         {/* --- SCROLL AREA --- */}
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 lg:px-0 lg:pr-4 pb-0 min-h-0">
