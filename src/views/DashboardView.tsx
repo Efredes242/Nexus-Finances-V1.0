@@ -446,27 +446,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     Ahorro directo: {formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} · Metas: {formatMoney(totalGoalsSaved)}
                   </p>
                 )}
-                {/* Barra de progreso vs presupuesto */}
-                <div className="mt-3">
-                  {s.pct !== null ? (
-                    <>
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Presupuesto</span>
-                        <span className={`text-[10px] font-black ${s.pct > 100 ? 'text-rose-400' : s.pct > 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                          {s.pct}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-slate-800/60 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all ${s.pct > 100 ? 'bg-rose-500' : s.pct > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                          style={{ width: `${Math.min(s.pct, 100)}%` }}
-                        ></div>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="text-[9px] text-slate-600 italic">Sin presupuesto definido</p>
-                  )}
-                </div>
               </div>
             </Card>
           );

@@ -315,17 +315,6 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between w-full md:w-auto gap-4 pl-8 md:pl-0">
-                      <div className="space-y-1 w-24 md:w-32 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block">Presupuesto</label>
-                        <input
-                          type="number"
-                          className="w-full bg-slate-900 rounded-lg md:rounded-xl p-2 border border-white/5 focus:border-blue-500 outline-none text-xs md:text-sm font-bold text-right"
-                          placeholder="0"
-                          value={categoryBudgets?.[cat] || ''}
-                          onChange={(e) => onUpdateBudget(cat, parseFloat(e.target.value) || 0)}
-                        />
-                      </div>
-
                       <div className="text-right flex-1 md:flex-none">
                         <p className={`text-xl md:text-2xl font-black ${config.color} drop-shadow-sm`}>
                           {formatMoney(currentTotals[cat] || 0)}
