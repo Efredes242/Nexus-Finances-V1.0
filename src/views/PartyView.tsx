@@ -10,6 +10,89 @@ import { getThemeColors } from '../utils/theme';
 import { InstallmentSimulator } from '../components/InstallmentSimulator';
 // ExpenseModal import removed as we implemented it inline
 
+/**
+ * Calcula el balance neto del usuario actual en un party.
+ * - balance > 0 → al usuario le deben (otros le tienen que pagar)
+ * - balance < 0 → el usuario debe (le tiene que pagar a otros)
+ * - balance ≈ 0 → al día
+ *
+ * Replica la lógica de `calculateBalances` (one-off expenses + installments)
+ * pero como función pura para poder usarse en el preview de cada card de la lista,
+ * sin tocar el state del componente. SI la entrada es ambigua o hay datos faltantes,
+ * devuelve `null` (la UI debe ocultar el badge en ese caso — fail-safe).
+ */
+function computePartyBalanceForUser(args: {
+    expenses: any[];
+    installments: any[];
+    members: any[];
+    viewYear: number;
+    viewMonth: number;
+    currentUserId: string;
+}): number | null {
+    const { expenses, installments, members, viewYear, viewMonth, currentUserId } = args;
+    if (!Array.isArray(members) || members.length === 0) return null;
+
+    // Identificar al miembro del usuario actual en este party.
+    // En la respuesta del backend `m.id` es el user_id (la PK de users), y
+    // `m.memberId` es el id del registro en party_members. `payer_id` y
+    // `participants` referencian el `m.id || m.memberId`, así que usamos esa misma
+    // resolución para mantenernos consistentes con `calculateBalances`.
+    const myMember = members.find(m => m.id === currentUserId);
+    if (!myMember) return null;
+    const myMemberKey = myMember.id || myMember.memberId;
+    if (!myMemberKey) return null;
+
+    // 1. One-off expenses del mes visible
+    const filteredExpenses = (expenses || []).filter(e => {
+        if (!e?.date) return false;
+        const d = new Date(e.date);
+        return d.getFullYear() === viewYear && (d.getMonth() + 1) === viewMonth;
+    });
+
+    const spentByUser: Record<string, number> = {};
+    let totalOneOff = 0;
+    filteredExpenses.forEach(e => {
+        spentByUser[e.payer_id] = (spentByUser[e.payer_id] || 0) + (e.amount || 0);
+        totalOneOff += (e.amount || 0);
+    });
+    const sharePerPersonOneOff = totalOneOff / (members.length || 1);
+    const oneOffBalance = (spentByUser[myMemberKey] || 0) - sharePerPersonOneOff;
+
+    // 2. Installments activas en el mes visible
+    let installmentBalance = 0;
+    (installments || []).forEach(plan => {
+        if (!plan?.start_date) return;
+        const [startY, startM] = String(plan.start_date).split('-').map(Number);
+        if (!startY || !startM) return;
+        const duration = plan.installments_count || 0;
+        const startIdx = startY * 12 + (startM - 1);
+        const currentIdx = viewYear * 12 + (viewMonth - 1);
+        const endIdx = startIdx + duration - 1;
+        if (currentIdx < startIdx || currentIdx > endIdx) return;
+
+        let monthlyAmount = plan.installment_amount || 0;
+        if (plan.currency === 'USD') monthlyAmount *= (plan.exchange_rate || 1);
+
+        let participants: string[] = [];
+        if (Array.isArray(plan.participants)) {
+            participants = plan.participants;
+        } else if (plan.debtor_id) {
+            participants = [plan.debtor_id];
+        }
+
+        // Soy el payer → recibo de cada participante
+        if (plan.payer_id === myMemberKey) {
+            installmentBalance += monthlyAmount * participants.length;
+        }
+        // Soy participant → debo al payer
+        if (participants.includes(myMemberKey)) {
+            installmentBalance -= monthlyAmount;
+        }
+    });
+
+    return oneOffBalance + installmentBalance;
+}
+
 
 export const PartyView: React.FC<{ user: any, currentMonth?: string, navigationParams?: any }> = ({ user, currentMonth, navigationParams }) => {
     const themeColors = getThemeColors();
@@ -22,6 +105,11 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string, navigationP
     const [partiesLoading, setPartiesLoading] = useState(true);
 
     const [installments, setInstallments] = useState<any[]>([]);
+
+    // Preview lazy del balance neto del usuario en cada party — para mostrar en las cards
+    // de la lista. Read-only: no escribe nada en backend; sólo lectura para mostrar info.
+    type BalancePreview = { net: number | null; status: 'loading' | 'ready' | 'error' };
+    const [partyBalancesPreview, setPartyBalancesPreview] = useState<Record<string, BalancePreview>>({});
 
     // Clock State
     const [currentTime, setCurrentTime] = useState(new Date());
@@ -76,6 +164,78 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string, navigationP
     useEffect(() => {
         loadParties();
     }, []);
+
+    // Carga lazy del preview de balance para cada party. Se dispara cuando cambia
+    // la lista de parties o el mes visible. Concurrencia limitada a 3 a la vez para
+    // no saturar el worker. Si algo falla, dejamos el badge oculto en vez de mostrar
+    // datos incorrectos (fail-safe).
+    useEffect(() => {
+        if (!user || !parties.length) return;
+        let cancelled = false;
+
+        const load = async () => {
+            const queue = [...parties];
+            const inFlight: Promise<void>[] = [];
+
+            const processOne = async (party: any) => {
+                if (cancelled) return;
+                setPartyBalancesPreview(prev => ({
+                    ...prev,
+                    [party.id]: prev[party.id] ?? { net: null, status: 'loading' },
+                }));
+                try {
+                    const [details, plans] = await Promise.all([
+                        api.getPartyDetails(party.id) as Promise<any>,
+                        api.getInstallmentPlans(party.id) as Promise<any>,
+                    ]);
+
+                    const expenses = Array.isArray(details?.expenses)
+                        ? details.expenses
+                        : (Array.isArray(details?.expenses?.results) ? details.expenses.results : []);
+                    const members = Array.isArray(details?.members)
+                        ? details.members
+                        : (Array.isArray(details?.members?.results) ? details.members.results : []);
+                    const installments = Array.isArray(plans)
+                        ? plans
+                        : (Array.isArray(plans?.results) ? plans.results : []);
+
+                    const net = computePartyBalanceForUser({
+                        expenses, installments, members,
+                        viewYear, viewMonth,
+                        currentUserId: user.id,
+                    });
+
+                    if (!cancelled) {
+                        setPartyBalancesPreview(prev => ({
+                            ...prev,
+                            [party.id]: { net, status: 'ready' },
+                        }));
+                    }
+                } catch (e) {
+                    if (!cancelled) {
+                        setPartyBalancesPreview(prev => ({
+                            ...prev,
+                            [party.id]: { net: null, status: 'error' },
+                        }));
+                    }
+                }
+            };
+
+            // Worker pool con concurrencia 3
+            const runWorker = async () => {
+                while (queue.length > 0 && !cancelled) {
+                    const next = queue.shift();
+                    if (!next) break;
+                    await processOne(next);
+                }
+            };
+            for (let i = 0; i < 3; i++) inFlight.push(runWorker());
+            await Promise.all(inFlight);
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, [parties, user, viewYear, viewMonth]);
 
     useEffect(() => {
         if (selectedParty) {
@@ -555,26 +715,62 @@ export const PartyView: React.FC<{ user: any, currentMonth?: string, navigationP
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {parties.map(party => (
-                            <Card key={party.id} className="cursor-pointer hover:border-blue-500/50 transition-all group" onClick={() => setSelectedParty(party)}>
-                                <div className="flex items-center gap-4">
-                                    <div className="p-4 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 group-hover:scale-110 transition-transform relative">
-                                        <Users className="w-8 h-8 text-blue-400" />
-                                        {party.pending_count > 0 && (
-                                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-[#0f172a] shadow-lg animate-pulse" title="Solicitudes pendientes">
-                                                <span className="text-[10px] font-bold text-white">{party.pending_count}</span>
-                                            </div>
-                                        )}
+                        {parties.map(party => {
+                            const preview = partyBalancesPreview[party.id];
+                            const renderBalanceBadge = () => {
+                                if (!preview || preview.status === 'loading') {
+                                    return (
+                                        <span className="text-[10px] font-bold text-slate-500 italic animate-pulse">Calculando…</span>
+                                    );
+                                }
+                                if (preview.status === 'error' || preview.net === null) {
+                                    // Fail-safe: no mostrar nada en lugar de un balance incorrecto
+                                    return null;
+                                }
+                                const net = preview.net;
+                                const formatted = `$${Math.abs(net).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`;
+                                if (Math.abs(net) < 1) {
+                                    return (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-700/40 border border-slate-500/30 text-[10px] font-black text-slate-300 uppercase tracking-wider">
+                                            <i className="fas fa-equals text-[9px]"></i> Al día
+                                        </span>
+                                    );
+                                }
+                                if (net > 0) {
+                                    return (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-black text-emerald-400 uppercase tracking-wider">
+                                            <i className="fas fa-arrow-down text-[9px]"></i> Te deben {formatted}
+                                        </span>
+                                    );
+                                }
+                                return (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 border border-rose-500/30 text-[10px] font-black text-rose-400 uppercase tracking-wider">
+                                        <i className="fas fa-arrow-up text-[9px]"></i> Debés {formatted}
+                                    </span>
+                                );
+                            };
+                            return (
+                                <Card key={party.id} className="cursor-pointer hover:border-blue-500/50 transition-all group" onClick={() => setSelectedParty(party)}>
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-4 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 group-hover:scale-110 transition-transform relative">
+                                            <Users className="w-8 h-8 text-blue-400" />
+                                            {party.pending_count > 0 && (
+                                                <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-[#0f172a] shadow-lg animate-pulse" title="Solicitudes pendientes">
+                                                    <span className="text-[10px] font-bold text-white">{party.pending_count}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <h3 className="text-xl font-bold truncate">{party.name}</h3>
+                                            <p className="text-gray-400 text-sm">
+                                                {party.created_by === user?.id ? 'Creado por mí' : `Creado por ${party.creator_name || 'otro usuario'}`}
+                                            </p>
+                                            <div className="mt-2">{renderBalanceBadge()}</div>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <h3 className="text-xl font-bold">{party.name}</h3>
-                                        <p className="text-gray-400 text-sm">
-                                            {party.created_by === user?.id ? 'Creado por mí' : `Creado por ${party.creator_name || 'otro usuario'}`}
-                                        </p>
-                                    </div>
-                                </div>
-                            </Card>
-                        ))}
+                                </Card>
+                            );
+                        })}
                         {parties.length === 0 && (
                             <div className="col-span-full text-center py-20 bg-white/5 rounded-2xl border border-dashed border-white/10">
                                 <Users className="w-16 h-16 text-gray-600 mx-auto mb-4" />
