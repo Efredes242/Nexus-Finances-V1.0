@@ -483,13 +483,16 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                             onDrop={(ev) => handleDrop(ev, e)}
                                             className={`group/row flex flex-col lg:table-row px-4 py-4 lg:p-0 border-b border-white/5 lg:border-none hover:bg-white/[0.03] transition-colors cursor-pointer ${isPaid ? 'bg-amber-500/10 border border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.1)] z-10 relative my-2 rounded-xl mx-2 lg:mx-0' : isCredit ? 'bg-indigo-900/10' : ''} ${e.is_provisional ? 'border-2 border-dashed border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10' : ''}`}
                                             onClick={() => {
-                                              if (e.installmentRef) setViewingInstallment(installmentPurchases.find(i => i.id === e.installmentRef) || null);
-                                              if (e.subEntries) {
-                                                const newExpanded = new Set(expandedRows);
-                                                if (newExpanded.has(e.id)) newExpanded.delete(e.id);
-                                                else newExpanded.add(e.id);
-                                                setExpandedRows(newExpanded);
+                                              if (e.installmentRef) {
+                                                setViewingInstallment(installmentPurchases.find(i => i.id === e.installmentRef) || null);
+                                                return;
                                               }
+                                              // Toggle expand para todas las filas (subEntries muestra subitems,
+                                              // entries simples muestran detalle inline en mobile).
+                                              const newExpanded = new Set(expandedRows);
+                                              if (newExpanded.has(e.id)) newExpanded.delete(e.id);
+                                              else newExpanded.add(e.id);
+                                              setExpandedRows(newExpanded);
                                             }}>
                                             <td className={`block lg:table-cell p-0 lg:py-4 lg:pl-10 ${!isPaid && isCredit ? 'border-l-4 border-indigo-500' : ''}`}>
                                               <div className="flex flex-col lg:flex-row lg:items-center gap-3">
@@ -499,8 +502,11 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                 <div className="flex flex-col flex-1 min-w-0">
                                                   <div className="flex justify-between items-start lg:items-center gap-2">
                                                     <div className="flex items-center gap-2 min-w-0">
-                                                      {e.subEntries && (
+                                                      {e.subEntries ? (
                                                         <i className={`fas fa-chevron-right text-xs text-blue-500 transition-transform duration-300 ${expandedRows.has(e.id) ? 'rotate-90' : ''}`}></i>
+                                                      ) : (
+                                                        // Mobile-only chevron para indicar que la fila es expandible (tap → detalle).
+                                                        <i className={`lg:hidden fas fa-chevron-right text-[10px] text-slate-500 transition-transform duration-300 ${expandedRows.has(e.id) ? 'rotate-90' : ''}`}></i>
                                                       )}
                                                       <span className="font-bold text-white group-hover/row:text-blue-400 transition-colors text-sm truncate">{e.name}</span>
                                                       {isCredit && <i className="fas fa-credit-card text-[10px] text-indigo-400 ml-1" title="Compra con Crédito"></i>}
@@ -546,6 +552,47 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                       </span>
                                                     )}
                                                   </div>
+
+                                                  {/* Detalle inline para entries simples cuando se hace tap en mobile.
+                                                      En desktop estos datos viven en columnas (Etiqueta, Método, Estado),
+                                                      así que sólo se muestra en `<lg`. */}
+                                                  {!e.subEntries && expandedRows.has(e.id) && (
+                                                    <div className="lg:hidden mt-3 pt-3 border-t border-white/10 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] animate-in slide-in-from-top-2 duration-200">
+                                                      <div className="flex flex-col gap-0.5">
+                                                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Etiqueta</span>
+                                                        <span className="font-bold text-slate-300 truncate">{e.tag || '—'}</span>
+                                                      </div>
+                                                      <div className="flex flex-col gap-0.5">
+                                                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Método</span>
+                                                        <span className="font-bold text-slate-300 flex items-center gap-1">
+                                                          <i className={`fas ${e.paymentMethod === PaymentMethod.CASH ? 'fa-money-bill' : e.paymentMethod === PaymentMethod.CREDIT ? 'fa-credit-card' : 'fa-building-columns'} opacity-50 text-[10px]`}></i>
+                                                          {e.paymentMethod}
+                                                        </span>
+                                                      </div>
+                                                      {e.currency && e.currency !== 'ARS' && e.originalAmount && (
+                                                        <div className="flex flex-col gap-0.5">
+                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Origen</span>
+                                                          <span className="font-bold text-emerald-400">
+                                                            {e.currency} {e.originalAmount.toFixed(2)} × {e.exchangeRateActual || e.exchangeRateEstimated || '?'}
+                                                          </span>
+                                                        </div>
+                                                      )}
+                                                      {e.application && (
+                                                        <div className="flex flex-col gap-0.5">
+                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">App</span>
+                                                          <span className="font-bold text-slate-300 truncate">{e.application}</span>
+                                                        </div>
+                                                      )}
+                                                      {isPaid && (
+                                                        <div className="flex flex-col gap-0.5 col-span-2">
+                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Estado</span>
+                                                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded-md text-[10px] font-black uppercase tracking-wider w-fit">
+                                                            <i className="fas fa-check"></i> Pagado
+                                                          </span>
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  )}
 
                                                   {e.subEntries && expandedRows.has(e.id) && (
                                                     <div className="mt-3 pl-2 sm:pl-4 border-l-[3px] border-indigo-500/30 space-y-2.5 animate-in slide-in-from-top-2 duration-200 w-full lg:max-w-2xl pr-2 sm:pr-0">

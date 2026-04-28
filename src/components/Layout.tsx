@@ -83,10 +83,10 @@ export const Layout: React.FC<LayoutProps> = ({
               value={currentMonthNum}
               onChange={(e) => onMonthChange(e.target.value)}
             >
-              <option value="annual" className="text-yellow-400 font-bold">★ ANUAL</option>
+              <option value="annual" className="text-yellow-400 font-bold">★ VISTA ANUAL</option>
               {Array.from({ length: 12 }).map((_, i) => (
                 <option key={i} value={(i + 1).toString().padStart(2, '0')}>
-                  {new Date(2000, i).toLocaleString('es-ES', { month: 'short' }).toUpperCase()}
+                  {new Date(2000, i).toLocaleString('es-ES', { month: 'long' }).toUpperCase()}
                 </option>
               ))}
             </select>

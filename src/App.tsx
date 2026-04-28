@@ -1500,6 +1500,8 @@ const App: React.FC = () => {
           projectedNetFlow={projectedNetFlow}
           totalGoalsSaved={totalGoalsSaved}
           formatMoney={formatMoney}
+          currentBudgetEntries={currentBudgetEntries}
+          categoryBudgets={state.categoryBudgets}
         />
       )}
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { getThemeColors } from '../utils/theme';
 import {
   AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -6,7 +6,8 @@ import {
 } from 'recharts';
 import { Card } from '../components/Card';
 import { Tooltip as InfoTooltip } from '../components/Tooltip';
-import { CategoryType } from '../types';
+import { CategoryType, BudgetEntry, TransactionStatus } from '../types';
+import { categoryConfig } from '../config/constants';
 
 interface DashboardViewProps {
   user: any;
@@ -16,6 +17,8 @@ interface DashboardViewProps {
   projectedNetFlow: number;
   totalGoalsSaved: number;
   formatMoney: (amount: number) => string;
+  currentBudgetEntries: BudgetEntry[];
+  categoryBudgets: Record<CategoryType, number>;
 }
 
 const renderActiveShape = (props: any) => {
@@ -71,7 +74,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   netFlow,
   projectedNetFlow,
   totalGoalsSaved,
-  formatMoney
+  formatMoney,
+  currentBudgetEntries,
+  categoryBudgets,
 }) => {
   const theme = localStorage.getItem('colorTheme') || 'new';
   const themeColors = getThemeColors();
@@ -87,28 +92,147 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   if (currentHour >= 12 && currentHour < 19) greeting = 'Buenas tardes';
   if (currentHour >= 19) greeting = 'Buenas noches';
 
+  // Próximos vencimientos: items pendientes con fecha dentro de los próximos 7 días.
+  // Excluye Ingresos (no se "vencen") y entries de agregación virtual.
+  const upcomingDue = useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const horizon = new Date(now);
+    horizon.setDate(horizon.getDate() + 7);
+
+    return currentBudgetEntries
+      .filter(e => {
+        if (e.category === CategoryType.INCOME) return false;
+        if (e.status === TransactionStatus.PAID) return false;
+        if (e.id.startsWith('card-agg-') || e.id.startsWith('shared-')) return false;
+        if (!e.date) return false;
+        const d = new Date(e.date.split('T')[0]);
+        return d >= now && d <= horizon;
+      })
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+      .slice(0, 4);
+  }, [currentBudgetEntries]);
+
+  // Top categoría del mes (mayor gasto, excluyendo Ingresos) y su % vs presupuesto.
+  const topCategory = useMemo(() => {
+    const candidates = Object.values(CategoryType)
+      .filter(cat => cat !== CategoryType.INCOME)
+      .map(cat => ({
+        category: cat,
+        total: currentTotals[cat] || 0,
+        budget: categoryBudgets?.[cat] || 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+    const top = candidates[0];
+    if (!top || top.total === 0) return null;
+    const pct = top.budget > 0 ? Math.round((top.total / top.budget) * 100) : null;
+    return { ...top, pct };
+  }, [currentTotals, categoryBudgets]);
+
+  const formatRelativeDate = (dateStr: string): string => {
+    const d = new Date(dateStr.split('T')[0]);
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Hoy';
+    if (diffDays === 1) return 'Mañana';
+    if (diffDays < 7) return `En ${diffDays} días`;
+    return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' });
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
-      {/* 0. Welcome Banner */}
-      <div className={`lg:col-span-3 bg-gradient-to-r ${theme === 'new' ? 'from-teal-900/40 to-emerald-900/40' : 'from-blue-900/40 to-indigo-900/40'} border border-white/5 rounded-3xl p-6 lg:p-8 relative overflow-hidden group`}>
-        <div className={`absolute inset-0 ${theme === 'new' ? 'bg-teal-500/5 group-hover:bg-teal-500/10' : 'bg-blue-500/5 group-hover:bg-blue-500/10'} blur-3xl transition-colors duration-1000`}></div>
-        <div className="relative z-10 flex flex-col sm:flex-row gap-6 items-center text-center sm:text-left">
-          <div className={`w-16 h-16 rounded-full bg-gradient-to-br ${themeColors.logoGradient} flex items-center justify-center text-white text-2xl shadow-lg shadow-blue-500/20 shrink-0`}>
-            {user.avatar ? (
-              <img src={user.avatar} className="w-full h-full rounded-full object-cover" alt="User" />
-            ) : (
-              <span className="font-black">{user.firstName ? user.firstName[0] : user.username[0].toUpperCase()}</span>
-            )}
-          </div>
-          <div>
-            <h2 className="text-2xl lg:text-3xl font-black text-white tracking-tight">
-              {greeting}, <span className={`text-transparent bg-clip-text bg-gradient-to-r ${theme === 'new' ? 'from-teal-400 to-emerald-400' : 'from-blue-400 to-indigo-400'}`}>{user.firstName || user.username}</span>!
-            </h2>
-            <p className="text-slate-400 font-medium text-sm lg:text-base">Aquí tienes el resumen de tus finanzas para hoy.</p>
-          </div>
+      {/* 0. Header Strip + 2 widgets accionables (3 columnas en desktop, apilados en mobile) */}
+
+      {/* Saludo compacto (1 columna en desktop) */}
+      <div className={`bg-gradient-to-br ${theme === 'new' ? 'from-teal-900/40 to-emerald-900/40' : 'from-blue-900/40 to-indigo-900/40'} border border-white/5 rounded-3xl p-5 relative overflow-hidden group flex items-center gap-4`}>
+        <div className={`absolute inset-0 ${theme === 'new' ? 'bg-teal-500/5' : 'bg-blue-500/5'} blur-3xl`}></div>
+        <div className={`relative z-10 w-14 h-14 rounded-full bg-gradient-to-br ${themeColors.logoGradient} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}>
+          {user.avatar ? (
+            <img src={user.avatar} className="w-full h-full rounded-full object-cover" alt="User" />
+          ) : (
+            <span className="font-black">{user.firstName ? user.firstName[0] : user.username[0].toUpperCase()}</span>
+          )}
+        </div>
+        <div className="relative z-10 min-w-0">
+          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{greeting}</p>
+          <h2 className={`text-xl font-black text-white tracking-tight truncate`}>
+            {user.firstName || user.username}
+          </h2>
         </div>
       </div>
+
+      {/* Widget 1: Próximos vencimientos */}
+      <Card variant="glass" className="!p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center justify-center">
+            <i className="fas fa-calendar-day text-sm"></i>
+          </div>
+          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vencimientos esta semana</span>
+        </div>
+        {upcomingDue.length === 0 ? (
+          <div className="text-center py-4">
+            <i className="fas fa-check-circle text-emerald-400/40 text-2xl mb-2"></i>
+            <p className="text-[11px] text-slate-500 font-bold">Nada pendiente esta semana</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {upcomingDue.map(e => {
+              const cfg = categoryConfig[e.category as CategoryType];
+              return (
+                <div key={e.id} className="flex items-center gap-2 text-[12px]">
+                  <i className={`fas ${cfg?.icon || 'fa-circle'} ${cfg?.color || 'text-slate-400'} text-[10px] w-4 text-center`}></i>
+                  <span className="font-bold text-white truncate flex-1">{e.name}</span>
+                  <span className="font-mono text-slate-300 whitespace-nowrap">{formatMoney(e.amount)}</span>
+                  <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider whitespace-nowrap">
+                    {formatRelativeDate(e.date)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Widget 2: Top categoría del mes + presupuesto */}
+      <Card variant="glass" className="!p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-400 border border-rose-500/20 flex items-center justify-center">
+            <i className="fas fa-fire text-sm"></i>
+          </div>
+          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Más gasto del mes</span>
+        </div>
+        {!topCategory ? (
+          <div className="text-center py-4">
+            <p className="text-[11px] text-slate-500 font-bold">Aún no hay gastos registrados</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm font-black text-white truncate mb-1">{topCategory.category}</p>
+            <p className="text-2xl font-black text-rose-400 tracking-tight">{formatMoney(topCategory.total)}</p>
+            {topCategory.pct !== null && (
+              <div className="mt-3">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Presupuesto</span>
+                  <span className={`text-[10px] font-black ${topCategory.pct > 100 ? 'text-rose-400' : topCategory.pct > 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {topCategory.pct}%
+                  </span>
+                </div>
+                <div className="w-full bg-slate-800/50 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${topCategory.pct > 100 ? 'bg-rose-500' : topCategory.pct > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                    style={{ width: `${Math.min(topCategory.pct, 100)}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+            {topCategory.pct === null && (
+              <p className="text-[10px] text-slate-500 italic mt-2">Sin presupuesto definido</p>
+            )}
+          </>
+        )}
+      </Card>
 
       {/* 1. Flujo Financiero (Evolución Mensual) */}
       <Card className="lg:col-span-3" title="Flujo Financiero" subtitle="Evolución de Ingresos vs gastos proyectados." variant="glass">
