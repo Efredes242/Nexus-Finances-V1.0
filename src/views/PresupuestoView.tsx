@@ -5,9 +5,10 @@ import { Card } from '../components/Card';
 import { Tooltip } from '../components/Tooltip';
 import { CategoryType, TransactionStatus, PaymentMethod, BudgetEntry, AppState, InstallmentPurchase } from '../types';
 import { categoryConfig } from '../config/constants';
-import { generateUUID, isUsdTargetEntry } from '../utils/helpers';
+import { generateUUID, isUsdTargetEntry, formatTgTime } from '../utils/helpers';
 import { SharedExpensesAPB } from '../components/SharedExpensesAPB';
 import { DolarQuoteCard } from '../components/DolarQuoteCard';
+import { TelegramTodayBanner } from '../components/TelegramTodayBanner';
 
 interface PresupuestoViewProps {
   fileInputRef: React.RefObject<HTMLInputElement>;
@@ -53,7 +54,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
   categories,
   currentMonth,
   installmentPurchases,
-  currentBudgetEntries,
+  currentBudgetEntries: rawBudgetEntries,
   setViewingInstallment,
   expandedRows,
   setExpandedRows,
@@ -105,6 +106,16 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
 
   const [draggedItem, setDraggedItem] = useState<BudgetEntry | null>(null);
   const [showTransferSummary, setShowTransferSummary] = useState(false);
+
+  // Pendientes de Telegram (id `tg_*` + is_provisional) viven sólo en el banner
+  // hasta que el usuario las confirme. El resto del view sigue trabajando con
+  // `currentBudgetEntries` igual que siempre — sólo enmascaramos las pendientes.
+  const currentBudgetEntries = useMemo(
+    () => rawBudgetEntries.filter(
+      e => !(typeof e.id === 'string' && e.id.startsWith('tg_') && !!e.is_provisional)
+    ),
+    [rawBudgetEntries],
+  );
 
   const applicationTotals = useMemo(() => {
     const totals: Record<string, number> = {};
@@ -206,8 +217,26 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
       .length;
   }, [monthRawEntries, filterCategory]);
 
+  // Movimientos cargados desde Telegram pendientes de revisión. El bot prefija
+  // el id con "tg_" e inserta `is_provisional=1` para que queden retenidas en
+  // el banner sin contaminar la lista de Gastos Variables hasta que el usuario
+  // las confirme manualmente. Banner vacío → no se renderiza.
+  const telegramEntriesPending = useMemo(() => {
+    return monthRawEntries
+      .filter(e => typeof e.id === 'string' && e.id.startsWith('tg_') && !!e.is_provisional)
+      .sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  }, [monthRawEntries]);
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 mt-2 lg:mt-6 pb-32 lg:pb-8">
+    <div className="space-y-4 lg:space-y-8 animate-in fade-in duration-500 mt-2 lg:mt-6 pb-32 lg:pb-8">
+      <TelegramTodayBanner
+        entries={telegramEntriesPending}
+        formatMoney={formatMoney}
+        onEdit={setEditingEntry}
+        onDelete={deleteEntry}
+        onConfirm={onConfirmEntry}
+      />
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center lg:px-4 gap-4">
 
         {/* View Mode Indicator & Transfer Summary */}
@@ -217,7 +246,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
               <i className={`fas ${initialViewMode === 'biweekly' ? 'fa-calendar-week' : 'fa-calendar-alt'} text-xl`}></i>
             </div>
             <div>
-              <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Modo de Vista</div>
+              <div className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest">Modo de Vista</div>
               <div className={`text-sm font-bold ${initialViewMode === 'biweekly' ? 'text-purple-400' : 'text-blue-400'}`}>
                 {initialViewMode === 'biweekly' ? 'Quincenal' : 'Mensual'}
               </div>
@@ -233,7 +262,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                 <i className="fas fa-money-bill-transfer text-lg"></i>
               </div>
               <div className="text-left">
-                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none mb-1 group-hover:text-blue-400 transition-colors">Transferencias</div>
+                <div className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none mb-1 group-hover:text-blue-400 transition-colors">Transferencias</div>
                 <div className="text-sm font-black text-white uppercase tracking-tight">Ver Resumen</div>
               </div>
             </button>
@@ -250,7 +279,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
 
         <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
           <div className="flex items-center gap-2 w-full sm:w-auto">
-            <span className="text-slate-400 text-sm font-bold uppercase tracking-wider text-[10px] whitespace-nowrap">Filtrar por:</span>
+            <span className="text-slate-400 text-sm font-bold uppercase tracking-wider text-xs lg:text-[10px] whitespace-nowrap">Filtrar por:</span>
             <select
               className={`${themeColors.input} flex-1 sm:flex-none w-full sm:w-auto rounded-xl px-4 py-2.5 text-white text-xs font-bold outline-none uppercase tracking-wide cursor-pointer hover:bg-white/5 transition-colors [&>option]:bg-slate-900 [&>option]:text-white`}
               value={filterCategory}
@@ -307,8 +336,8 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                           />
                         </div>
                         <div className="flex items-center gap-2 mt-1">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden md:inline">Total del periodo</span>
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:hidden">Total</span>
+                          <span className="text-xs lg:text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden md:inline">Total del periodo</span>
+                          <span className="text-xs lg:text-[10px] font-bold text-slate-400 uppercase tracking-widest md:hidden">Total</span>
                           <div className="h-px w-8 bg-white/10 hidden md:block"></div>
                         </div>
                       </div>
@@ -429,7 +458,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                 <div key={idx} className={`${viewMode === 'biweekly' && idx > 0 ? 'mt-4' : ''}`}>
                                   {section.title && (
                                     <div className="px-6 py-2 bg-indigo-900/20 border-y border-white/5 backdrop-blur-sm flex justify-between items-center group/section">
-                                      <h4 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest flex items-center gap-2">
+                                      <h4 className="text-xs lg:text-[10px] font-black text-indigo-300 uppercase tracking-widest flex items-center gap-2">
                                         <i className="fas fa-calendar-week"></i>
                                         {section.title}
                                       </h4>
@@ -441,14 +470,14 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                             date: section.defaultDate, status: TransactionStatus.PENDING, paymentMethod: PaymentMethod.CASH
                                           });
                                         }}
-                                        className="opacity-0 group-hover/section:opacity-100 transition-opacity px-2 py-0.5 rounded bg-indigo-500/20 hover:bg-indigo-500/40 text-[9px] font-black text-indigo-300 uppercase tracking-wider border border-indigo-500/30"
+                                        className="opacity-0 group-hover/section:opacity-100 transition-opacity px-2 py-0.5 rounded bg-indigo-500/20 hover:bg-indigo-500/40 text-[11px] lg:text-[9px] font-black text-indigo-300 uppercase tracking-wider border border-indigo-500/30"
                                       >
                                         <i className="fas fa-plus mr-1"></i> Añadir
                                       </button>
                                     </div>
                                   )}
                                   <table className="w-full text-left border-collapse table-fixed lg:table-auto">
-                                    <thead className="hidden lg:table-header-group bg-white/5 border-b border-white/5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                    <thead className="hidden lg:table-header-group bg-white/5 border-b border-white/5 text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest">
                                       <tr>
                                         <th className="px-2 py-3 pl-4 lg:px-8 lg:py-4 lg:pl-10 w-auto lg:w-2/5">Concepto</th>
                                         <th className="hidden lg:table-cell px-8 py-4">Etiqueta</th>
@@ -495,13 +524,36 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                         <i className={`fas fa-chevron-right text-xs text-blue-500 transition-transform duration-300 ${expandedRows.has(e.id) ? 'rotate-90' : ''}`}></i>
                                                       ) : (
                                                         // Mobile-only chevron para indicar que la fila es expandible (tap → detalle).
-                                                        <i className={`lg:hidden fas fa-chevron-right text-[10px] text-slate-500 transition-transform duration-300 ${expandedRows.has(e.id) ? 'rotate-90' : ''}`}></i>
+                                                        <i className={`lg:hidden fas fa-chevron-right text-xs lg:text-[10px] text-slate-500 transition-transform duration-300 ${expandedRows.has(e.id) ? 'rotate-90' : ''}`}></i>
                                                       )}
                                                       <span className="font-bold text-white group-hover/row:text-blue-400 transition-colors text-sm truncate">{e.name}</span>
-                                                      {isCredit && <i className="fas fa-credit-card text-[10px] text-indigo-400 ml-1" title="Compra con Crédito"></i>}
+                                                      {typeof e.id === 'string' && e.id.startsWith('tg_') && (
+                                                        <i className="fab fa-telegram text-[11px] text-cyan-400 ml-1 flex-shrink-0" title="Cargado desde Telegram"></i>
+                                                      )}
+                                                      {!!e.repeatRef && (() => {
+                                                        const orig = allEntries.find(x => x.id === e.repeatRef);
+                                                        const my = orig?.month_year || orig?.date?.slice(0, 7) || '';
+                                                        const mm = my.split('-')[1];
+                                                        const yy = my.split('-')[0];
+                                                        const monthLabel = mm
+                                                          ? ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][parseInt(mm,10)-1] + ' ' + yy
+                                                          : 'original';
+                                                        return (
+                                                          <button
+                                                            type="button"
+                                                            onClick={(ev) => { ev.stopPropagation(); if (orig) setEditingEntry(orig); }}
+                                                            className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500 hover:text-white transition-colors flex-shrink-0"
+                                                            title={`Copia · original en ${monthLabel} (click para abrir)`}
+                                                          >
+                                                            <i className="fas fa-link text-[9px]"></i>
+                                                            <span className="text-[9px] font-black uppercase tracking-wider whitespace-nowrap">{monthLabel}</span>
+                                                          </button>
+                                                        );
+                                                      })()}
+                                                      {isCredit && <i className="fas fa-credit-card text-xs lg:text-[10px] text-indigo-400 ml-1" title="Compra con Crédito"></i>}
                                                       {e.linkedIncomeId && (
                                                         <div className="flex items-center gap-1.5 ml-1">
-                                                          <i className="fas fa-link text-[10px] text-blue-400" title="Vinculado a un Ingreso"></i>
+                                                          <i className="fas fa-link text-xs lg:text-[10px] text-blue-400" title="Vinculado a un Ingreso"></i>
                                                           {(() => {
                                                             const info = getLinkedIncomeInfo(e.linkedIncomeId);
                                                             if (!info) return null;
@@ -519,7 +571,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                     <div className="lg:hidden text-right flex flex-col items-end">
                                                       <span className={`font-black text-sm ${isPaid ? 'text-amber-500/50 line-through' : 'text-white'}`}>{formatMoney(e.amount)}</span>
                                                       {e.currency && e.currency !== 'ARS' && e.originalAmount && (
-                                                        <span className="text-[9px] font-black text-green-400 bg-green-400/10 px-1 py-0.5 rounded border border-green-400/20 mt-0.5">
+                                                        <span className="text-[11px] lg:text-[9px] font-black text-green-400 bg-green-400/10 px-1 py-0.5 rounded border border-green-400/20 mt-0.5">
                                                           {e.currency} {e.originalAmount.toFixed(2)}
                                                         </span>
                                                       )}
@@ -528,16 +580,21 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
 
                                                   <div className="flex items-center gap-2 mt-1">
                                                     {!e.subEntries && (
-                                                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wide">{(() => {
-                                                        if (!e.date) return '';
-                                                        const parts = e.date.split('T')[0].split('-');
-                                                        return `${parts[2]}/${parts[1]}/${parts[0]}`;
-                                                      })()}</span>
+                                                      <span className="text-xs lg:text-[10px] text-slate-500 font-bold uppercase tracking-wide">
+                                                        {(() => {
+                                                          if (!e.date) return '';
+                                                          const parts = e.date.split('T')[0].split('-');
+                                                          return `${parts[2]}/${parts[1]}/${parts[0]}`;
+                                                        })()}
+                                                        {typeof e.id === 'string' && e.id.startsWith('tg_') && formatTgTime(e.id) && (
+                                                          <span className="text-cyan-500/80 ml-1.5 normal-case">· {formatTgTime(e.id)}hs</span>
+                                                        )}
+                                                      </span>
                                                     )}
                                                     {!!e.is_provisional && (
                                                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-500 border border-amber-500/30 animate-pulse">
-                                                        <i className="fas fa-fw fa-clock text-[9px]"></i>
-                                                        <span className="text-[9px] font-black uppercase tracking-wider">Proyectado</span>
+                                                        <i className="fas fa-fw fa-clock text-[11px] lg:text-[9px]"></i>
+                                                        <span className="text-[11px] lg:text-[9px] font-black uppercase tracking-wider">Proyectado</span>
                                                       </span>
                                                     )}
                                                   </div>
@@ -548,19 +605,19 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                   {!e.subEntries && expandedRows.has(e.id) && (
                                                     <div className="lg:hidden mt-3 pt-3 border-t border-white/10 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] animate-in slide-in-from-top-2 duration-200">
                                                       <div className="flex flex-col gap-0.5">
-                                                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Etiqueta</span>
+                                                        <span className="text-[11px] lg:text-[9px] font-black text-slate-500 uppercase tracking-widest">Etiqueta</span>
                                                         <span className="font-bold text-slate-300 truncate">{e.tag || '—'}</span>
                                                       </div>
                                                       <div className="flex flex-col gap-0.5">
-                                                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Método</span>
+                                                        <span className="text-[11px] lg:text-[9px] font-black text-slate-500 uppercase tracking-widest">Método</span>
                                                         <span className="font-bold text-slate-300 flex items-center gap-1">
-                                                          <i className={`fas ${e.paymentMethod === PaymentMethod.CASH ? 'fa-money-bill' : e.paymentMethod === PaymentMethod.CREDIT ? 'fa-credit-card' : 'fa-building-columns'} opacity-50 text-[10px]`}></i>
+                                                          <i className={`fas ${e.paymentMethod === PaymentMethod.CASH ? 'fa-money-bill' : e.paymentMethod === PaymentMethod.CREDIT ? 'fa-credit-card' : 'fa-building-columns'} opacity-50 text-xs lg:text-[10px]`}></i>
                                                           {e.paymentMethod}
                                                         </span>
                                                       </div>
                                                       {e.currency && e.currency !== 'ARS' && e.originalAmount && (
                                                         <div className="flex flex-col gap-0.5">
-                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Origen</span>
+                                                          <span className="text-[11px] lg:text-[9px] font-black text-slate-500 uppercase tracking-widest">Origen</span>
                                                           <span className="font-bold text-emerald-400">
                                                             {e.currency} {e.originalAmount.toFixed(2)} × {e.exchangeRateActual || e.exchangeRateEstimated || '?'}
                                                           </span>
@@ -568,14 +625,14 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                       )}
                                                       {e.application && (
                                                         <div className="flex flex-col gap-0.5">
-                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">App</span>
+                                                          <span className="text-[11px] lg:text-[9px] font-black text-slate-500 uppercase tracking-widest">App</span>
                                                           <span className="font-bold text-slate-300 truncate">{e.application}</span>
                                                         </div>
                                                       )}
                                                       {isPaid && (
                                                         <div className="flex flex-col gap-0.5 col-span-2">
-                                                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Estado</span>
-                                                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded-md text-[10px] font-black uppercase tracking-wider w-fit">
+                                                          <span className="text-[11px] lg:text-[9px] font-black text-slate-500 uppercase tracking-widest">Estado</span>
+                                                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded-md text-xs lg:text-[10px] font-black uppercase tracking-wider w-fit">
                                                             <i className="fas fa-check"></i> Pagado
                                                           </span>
                                                         </div>
@@ -589,27 +646,30 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                         <div key={sub.id} className="bg-slate-800/60 border border-slate-700/50 shadow-sm text-xs text-slate-400 flex flex-col sm:flex-row sm:justify-between sm:items-center group/sub py-3 px-3 sm:px-4 rounded-xl -ml-1 sm:-ml-2 gap-3 sm:gap-0 hover:bg-slate-700/60 transition-colors w-full relative overflow-hidden">
                                                           {/* Left color accent line based on type */}
                                                           <div className={`absolute left-0 top-0 bottom-0 w-1 ${sub.installmentRef ? 'bg-slate-600' : sub.category === CategoryType.INCOME ? 'bg-emerald-500' : 'bg-blue-500/50'}`}></div>
-                                                          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                                            <div className="flex items-center gap-2">
+                                                          <div className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-0 flex-1">
+                                                            <div className="flex items-center gap-2 flex-shrink-0">
                                                               {sub.installmentRef ? (
-                                                                <span className="text-[9px] font-black bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-white/5 tracking-wider uppercase">Cuota {sub.currentInstallment}/{sub.totalInstallments}</span>
+                                                                <span className="text-[11px] lg:text-[9px] font-black bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-white/5 tracking-wider uppercase">Cuota {sub.currentInstallment}/{sub.totalInstallments}</span>
                                                               ) : sub.category === CategoryType.INCOME ? (
-                                                                <span className="text-[9px] font-black bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 tracking-wider uppercase">Ingreso</span>
+                                                                <span className="text-[11px] lg:text-[9px] font-black bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 tracking-wider uppercase">Ingreso</span>
                                                               ) : (
-                                                                <span className="text-[9px] font-black text-slate-500 border border-slate-700 px-1.5 py-0.5 rounded tracking-wider uppercase">Consumo</span>
+                                                                <span className="text-[11px] lg:text-[9px] font-black text-slate-500 border border-slate-700 px-1.5 py-0.5 rounded tracking-wider uppercase">Consumo</span>
                                                               )}
                                                             </div>
-                                                            <span className={`group-hover/sub:text-white transition-colors truncate max-w-[150px] sm:max-w-none ${sub.category === CategoryType.INCOME ? 'text-emerald-400 font-bold' : ''}`}>
+                                                            <span
+                                                              className={`group-hover/sub:text-white transition-colors truncate min-w-0 max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] ${sub.category === CategoryType.INCOME ? 'text-emerald-400 font-bold' : ''}`}
+                                                              title={sub.name.replace(/\s*\(Cuota \d+\/\d+\)/, '')}
+                                                            >
                                                               {sub.name.replace(/\s*\(Cuota \d+\/\d+\)/, '')}
                                                             </span>
                                                             {sub.linkedIncomeId && (
                                                               <div className="flex items-center gap-1.5 min-w-0">
-                                                                <i className="fas fa-link text-[10px] text-blue-400/50"></i>
+                                                                <i className="fas fa-link text-xs lg:text-[10px] text-blue-400/50"></i>
                                                                 {(() => {
                                                                   const info = getLinkedIncomeInfo(sub.linkedIncomeId);
                                                                   if (!info) return null;
                                                                   return (
-                                                                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase border shadow-md whitespace-nowrap leading-none ${info.bg} ${info.text} ${info.border}`}>
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[11px] lg:text-[9px] font-black uppercase border shadow-md whitespace-nowrap leading-none ${info.bg} ${info.text} ${info.border}`}>
                                                                       {info.name}
                                                                     </span>
                                                                   );
@@ -617,10 +677,10 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                               </div>
                                                             )}
                                                           </div>
-                                                          <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto mt-1 sm:mt-0">
+                                                          <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto mt-1 sm:mt-0 flex-shrink-0">
                                                             <span className={`font-mono flex items-center gap-2 ${sub.category === CategoryType.INCOME ? 'text-emerald-400 font-bold' : 'text-slate-300'}`}>
                                                               {sub.currency && sub.currency !== 'ARS' && sub.originalAmount && (
-                                                                <span className="text-[10px] text-slate-400 font-semibold bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
+                                                                <span className="text-xs lg:text-[10px] text-slate-400 font-semibold bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
                                                                   {sub.currency} {sub.originalAmount.toFixed(2)}
                                                                 </span>
                                                               )}
@@ -633,8 +693,8 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                                   className="p-1 px-2 text-amber-500 hover:bg-amber-500/10 rounded transition-all border border-amber-500/10 flex items-center gap-1.5"
                                                                   title="Vincular ingreso a esta cuota"
                                                                 >
-                                                                  <i className="fas fa-link text-[10px]"></i>
-                                                                  <span className="text-[9px] font-black uppercase">Vincular</span>
+                                                                  <i className="fas fa-link text-xs lg:text-[10px]"></i>
+                                                                  <span className="text-[11px] lg:text-[9px] font-black uppercase">Vincular</span>
                                                                 </button>
                                                               ) : (
                                                                 <>
@@ -643,14 +703,14 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                                     className="p-1 px-2.5 text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-all border border-blue-500/20 shadow-sm"
                                                                     title="Editar consumo individual"
                                                                   >
-                                                                    <i className="fas fa-pencil text-[10px]"></i>
+                                                                    <i className="fas fa-pencil text-xs lg:text-[10px]"></i>
                                                                   </button>
                                                                   <button
                                                                     onClick={(ev) => { ev.stopPropagation(); deleteEntry(sub.id); }}
                                                                     className="p-1 px-2.5 text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg transition-all border border-rose-500/20 shadow-sm"
                                                                     title="Eliminar consumo"
                                                                   >
-                                                                    <i className="fas fa-trash text-[10px]"></i>
+                                                                    <i className="fas fa-trash text-xs lg:text-[10px]"></i>
                                                                   </button>
                                                                 </>
                                                               )}
@@ -665,16 +725,16 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                             </td>
                                             <td className="hidden lg:table-cell px-8 py-4">
                                               {e.installmentRef && e.category !== CategoryType.SHARED_EXPENSE ? (
-                                                <span className="inline-flex items-center px-2.5 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-[10px] font-black uppercase tracking-wide">
+                                                <span className="inline-flex items-center px-2.5 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-xs lg:text-[10px] font-black uppercase tracking-wide">
                                                   <i className="fas fa-clock mr-1.5"></i> Cuota {e.currentInstallment}/{e.totalInstallments}
                                                 </span>
                                               ) : (
                                                 <div className="flex flex-col items-start gap-1">
-                                                  <span className={`inline-flex items-center px-2.5 py-1 ${e.category === CategoryType.SHARED_EXPENSE ? 'bg-teal-500/10 text-teal-400 border-teal-500/20' : 'bg-white/5 text-slate-300 border-white/10'} border rounded-lg text-[10px] font-black uppercase tracking-wide group-hover/row:border-blue-500/30 transition-colors`}>
+                                                  <span className={`inline-flex items-center px-2.5 py-1 ${e.category === CategoryType.SHARED_EXPENSE ? 'bg-teal-500/10 text-teal-400 border-teal-500/20' : 'bg-white/5 text-slate-300 border-white/10'} border rounded-lg text-xs lg:text-[10px] font-black uppercase tracking-wide group-hover/row:border-blue-500/30 transition-colors`}>
                                                     <i className={`fas ${e.category === CategoryType.SHARED_EXPENSE ? 'fa-user-tag' : 'fa-tag'} mr-1.5 opacity-50`}></i> {e.tag}
                                                   </span>
                                                   {e.installmentRef && e.category === CategoryType.SHARED_EXPENSE && (
-                                                    <span className="text-[9px] font-mono text-slate-500 ml-1">
+                                                    <span className="text-[11px] lg:text-[9px] font-mono text-slate-500 ml-1">
                                                       Cuota {e.currentInstallment}/{e.totalInstallments}
                                                     </span>
                                                   )}
@@ -689,7 +749,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                             </td>
                                             <td className="hidden lg:table-cell px-8 py-4 text-center">
                                               {isPaid && (
-                                                <span className="inline-flex items-center px-2.5 py-1 bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded-lg text-[10px] font-black uppercase tracking-wide shadow-[0_0_10px_rgba(245,158,11,0.2)]">
+                                                <span className="inline-flex items-center px-2.5 py-1 bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded-lg text-xs lg:text-[10px] font-black uppercase tracking-wide shadow-[0_0_10px_rgba(245,158,11,0.2)]">
                                                   <i className="fas fa-check mr-1.5"></i> Pago
                                                 </span>
                                               )}
@@ -698,10 +758,10 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                               <span className={`font-black text-sm ${isPaid ? 'text-amber-500/50 line-through decoration-2' : 'text-white'}`}>{formatMoney(e.amount)}</span>
                                               {e.currency && e.currency !== 'ARS' && e.originalAmount && (
                                                 <div className="flex flex-col items-end mt-1 animate-in slide-in-from-right-2 duration-300">
-                                                  <span className="text-[10px] font-black text-green-400 bg-green-400/10 px-1.5 py-0.5 rounded border border-green-400/20">
+                                                  <span className="text-xs lg:text-[10px] font-black text-green-400 bg-green-400/10 px-1.5 py-0.5 rounded border border-green-400/20">
                                                     {e.currency} {e.originalAmount.toFixed(2)}
                                                   </span>
-                                                  <span className="text-[9px] font-bold text-slate-500 mt-0.5">
+                                                  <span className="text-[11px] lg:text-[9px] font-bold text-slate-500 mt-0.5">
                                                     x {e.exchangeRateActual || e.exchangeRateEstimated}
                                                   </span>
                                                 </div>
@@ -711,7 +771,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                               <div className="flex justify-between items-center lg:justify-center mt-3 lg:mt-0 pt-3 lg:pt-0 border-t lg:border-none border-white/5">
                                                 {/* Tag/Badge for mobile (hidden on desktop because it has its own column) */}
                                                 <div className="lg:hidden">
-                                                  <span className={`inline-flex items-center px-2 py-0.5 ${e.category === CategoryType.SHARED_EXPENSE ? 'bg-teal-500/10 text-teal-400 border-teal-500/20' : 'bg-white/5 text-slate-500 border-white/10'} border rounded-md text-[9px] font-black uppercase tracking-wider`}>
+                                                  <span className={`inline-flex items-center px-2 py-0.5 ${e.category === CategoryType.SHARED_EXPENSE ? 'bg-teal-500/10 text-teal-400 border-teal-500/20' : 'bg-white/5 text-slate-500 border-white/10'} border rounded-md text-[11px] lg:text-[9px] font-black uppercase tracking-wider`}>
                                                     <i className={`fas ${e.category === CategoryType.SHARED_EXPENSE ? 'fa-user-tag' : 'fa-tag'} mr-1 opacity-50`}></i> {e.tag}
                                                   </span>
                                                 </div>
@@ -723,7 +783,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                     title={isPaid ? "Deshacer pago" : "Marcar como Pagado"}
                                                   >
                                                     <i className={`fas ${isPaid ? 'fa-undo' : 'fa-check-double'} text-xs`}></i>
-                                                    <span className="text-[10px] font-black uppercase tracking-wider hidden xl:inline">
+                                                    <span className="text-xs lg:text-[10px] font-black uppercase tracking-wider hidden xl:inline">
                                                       {isPaid ? 'Deshacer' : 'Pague'}
                                                     </span>
                                                   </button>
@@ -735,7 +795,19 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                                                   {!e.installmentRef && !e.id.startsWith('card-agg-') && (
                                                     <>
                                                       <button onClick={(ev) => { ev.stopPropagation(); setEditingEntry(e); }} className={`w-9 h-9 lg:w-8 lg:h-8 rounded-xl ${themeColors.iconBg} hover:bg-opacity-100 hover:text-white transition-all shadow-lg flex items-center justify-center`} title="Editar movimiento"><i className="fas fa-pencil text-xs"></i></button>
-                                                      <button onClick={(ev) => { ev.stopPropagation(); deleteEntry(e.id); }} className="w-9 h-9 lg:w-8 lg:h-8 rounded-xl bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white transition-all shadow-lg hover:shadow-rose-500/30 flex items-center justify-center" title="Eliminar movimiento"><i className="fas fa-trash text-xs"></i></button>
+                                                      {/* Eliminar bloqueado en copias del grupo REPETIR — sólo se borran cascadeando desde el original. */}
+                                                      {e.repeatRef ? (
+                                                        <button
+                                                          disabled
+                                                          className="w-9 h-9 lg:w-8 lg:h-8 rounded-xl bg-slate-800 text-slate-600 cursor-not-allowed flex items-center justify-center opacity-50"
+                                                          title="No podés eliminar una copia. Editá el original para cambiar el rango."
+                                                          onClick={(ev) => ev.stopPropagation()}
+                                                        >
+                                                          <i className="fas fa-trash text-xs"></i>
+                                                        </button>
+                                                      ) : (
+                                                        <button onClick={(ev) => { ev.stopPropagation(); deleteEntry(e.id); }} className="w-9 h-9 lg:w-8 lg:h-8 rounded-xl bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white transition-all shadow-lg hover:shadow-rose-500/30 flex items-center justify-center" title="Eliminar movimiento"><i className="fas fa-trash text-xs"></i></button>
+                                                      )}
                                                     </>
                                                   )}
                                                 </div>
@@ -799,7 +871,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                 return (
                   <div className="mt-2 pt-2 border-t border-white/5 animate-in slide-in-from-right-2 text-right">
                     <div className="flex items-center justify-end gap-2 mb-0.5">
-                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block">Proyectado</span>
+                      <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest block">Proyectado</span>
                       <Tooltip content="Total de consumo estimado incluyendo todos los movimientos provisorios." position="left" useIcon />
                     </div>
                     <p className="text-xl font-black text-amber-500">{formatMoney(projectedTotalConsumption)}</p>
@@ -858,7 +930,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
                     </div>
                     <div>
                       <p className="text-white font-bold">Sin transferencias</p>
-                      <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">No hay gastos vinculados a aplicaciones en este periodo</p>
+                      <p className="text-slate-500 text-xs lg:text-[10px] uppercase font-black tracking-widest">No hay gastos vinculados a aplicaciones en este periodo</p>
                     </div>
                   </div>
                 ) : (
@@ -878,7 +950,7 @@ export const PresupuestoView: React.FC<PresupuestoViewProps> = ({
 
               <div className="pt-4 border-t border-white/10 flex flex-col gap-2">
                 <div className="flex justify-between items-center px-2">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Vinculado</span>
+                  <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Vinculado</span>
                   <span className="font-black text-white">{formatMoney(Object.values(applicationTotals).reduce((a, b) => a + b, 0))}</span>
                 </div>
                 <Button className="w-full rounded-xl py-4 mt-2" onClick={() => setShowTransferSummary(false)}>Cerrar</Button>

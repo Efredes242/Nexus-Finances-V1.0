@@ -39,3 +39,24 @@ export const isUsdTargetEntry = (e: any): boolean => (
   !e.id.startsWith('shared-') &&
   !e.id.startsWith('virt-')
 );
+
+// El bot de Telegram genera ids con formato `tg_<timestamp_ms>_<rand>`. Eso
+// nos da la hora exacta de creación gratis: la extraemos para mostrarla en el
+// banner y en la lista de Movimientos sin tener que agregar columna nueva.
+export const extractTgTimestamp = (id: string | undefined | null): number | null => {
+  if (typeof id !== 'string') return null;
+  const match = id.match(/^tg_(\d+)_/);
+  if (!match) return null;
+  const ts = parseInt(match[1], 10);
+  return Number.isFinite(ts) ? ts : null;
+};
+
+// HH:MM en hora local del navegador (UTC-3 para AR). El timestamp viene en UTC ms.
+export const formatTgTime = (id: string | undefined | null): string => {
+  const ts = extractTgTimestamp(id);
+  if (ts === null) return '';
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+};

@@ -64,23 +64,34 @@ export const Header: React.FC<HeaderProps> = ({
 
     if (!scrollContainer) return;
 
+    // Throttle con rAF: el scroll dispara muchísimos eventos por segundo. setState
+    // en cada uno hace re-render del componente y baja FPS en mobile. Coalescemos
+    // todos los eventos al próximo frame y comparamos con lastScrollY local.
+    let rafId: number | null = null;
+    let lastY = scrollContainer.scrollTop;
     const handleScroll = () => {
-      const currentScrollY = scrollContainer.scrollTop;
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const currentScrollY = scrollContainer.scrollTop;
 
-      // Only apply auto-hide on mobile (< 1024px)
-      if (window.innerWidth >= 1024) {
-        setIsHeaderVisible(true);
-        return;
-      }
+        // Only apply auto-hide on mobile (< 1024px)
+        if (window.innerWidth >= 1024) {
+          setIsHeaderVisible(true);
+          lastY = currentScrollY;
+          return;
+        }
 
-      // Show header when scrolling up, hide when scrolling down
-      if (currentScrollY < lastScrollY || currentScrollY < 50) {
-        setIsHeaderVisible(true);
-      } else if (currentScrollY > lastScrollY && currentScrollY > 100) {
-        setIsHeaderVisible(false);
-      }
+        // Show header when scrolling up, hide when scrolling down
+        if (currentScrollY < lastY || currentScrollY < 50) {
+          setIsHeaderVisible(true);
+        } else if (currentScrollY > lastY && currentScrollY > 100) {
+          setIsHeaderVisible(false);
+        }
 
-      setLastScrollY(currentScrollY);
+        lastY = currentScrollY;
+        setLastScrollY(currentScrollY);
+      });
     };
 
     // Touch gesture detection for pull-down to show header
@@ -107,11 +118,15 @@ export const Header: React.FC<HeaderProps> = ({
     scrollContainer.addEventListener('touchmove', handleTouchMove, { passive: true });
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       scrollContainer.removeEventListener('scroll', handleScroll);
       scrollContainer.removeEventListener('touchstart', handleTouchStart);
       scrollContainer.removeEventListener('touchmove', handleTouchMove);
     };
-  }, [lastScrollY]);
+    // Dep `lastScrollY` removido a propósito — usamos `lastY` local para evitar
+    // rearmar listener en cada scroll (eso producía O(n) listeners).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-hide when year or month changes (mobile only)
   useEffect(() => {
@@ -133,7 +148,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         <div className="flex flex-col lg:flex-row items-center gap-4 lg:gap-8 w-full lg:w-auto">
           <div className="flex flex-row lg:flex-col items-center lg:items-start gap-4 lg:gap-0 w-full lg:w-auto justify-between lg:justify-start">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0 lg:mb-1">Año Fiscal</span>
+            <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0 lg:mb-1">Año Fiscal</span>
             <select
               className={`${theme === 'new' ? 'glass-select-new focus:border-teal-500' : 'glass-select focus:border-blue-500'} rounded-xl px-5 py-2 font-black text-sm outline-none cursor-pointer hover:border-white/20 transition-colors w-32 ${themeColors.card}`}
               value={currentYear}
@@ -146,7 +161,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="hidden lg:block h-10 w-px bg-white/10"></div>
 
           <div className="flex flex-row lg:flex-col items-center lg:items-start gap-4 lg:gap-0 w-full lg:w-auto justify-between lg:justify-start">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0 lg:mb-1">Periodo</span>
+            <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0 lg:mb-1">Periodo</span>
             <select
               className={`${theme === 'new' ? 'glass-select-new focus:border-teal-500' : 'glass-select focus:border-blue-500'} rounded-xl px-5 py-2 font-black text-white text-sm outline-none cursor-pointer hover:border-white/20 transition-colors w-full lg:w-48 ${themeColors.card}`}
               value={currentMonthNum}
@@ -194,7 +209,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <div className="text-center lg:text-right w-full lg:w-auto flex flex-row lg:flex-col justify-between lg:justify-center items-center">
             <div className="flex items-center justify-end gap-2 mb-0 lg:mb-1">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ingresos Mes</span>
+              <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest">Ingresos Mes</span>
               <button
                 onClick={() => setPrivacyMode(!privacyMode)}
                 className={`text-slate-500 hover:${themeColors.accent} transition-colors`}
