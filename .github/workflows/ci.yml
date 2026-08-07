@@ -39,7 +39,7 @@ jobs:
         run: npm run build
 
       - name: Upload dist as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: dist-${{ github.sha }}
           path: dist/
@@ -112,7 +112,7 @@ jobs:
 
       - name: Subir reporte de Playwright
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: playwright-report-${{ github.run_number }}
           path: playwright-report/
