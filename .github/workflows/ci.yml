@@ -3,8 +3,11 @@ name: CI
 # Verifica que cada push y PR a main:
 #   1) los tipos de TypeScript chequeen sin errores
 #   2) el build de Vite produzca un bundle sin romper
-# NO hace deploy — el deploy sigue siendo manual con `wrangler pages deploy dist`
-# para que un push accidental no afecte producción sin revisión.
+#   3) los E2E de Playwright pasen contra un PREVIEW aislado
+#
+# NO deploya a producción. El deploy productivo sigue siendo manual
+# (`wrangler pages deploy dist` + `wrangler deploy`) para que un push
+# accidental no afecte producción sin revisión.
 
 on:
   push:
@@ -18,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -40,4 +43,77 @@ jobs:
         with:
           name: dist-${{ github.sha }}
           path: dist/
+          retention-days: 7
+
+  e2e-preview:
+    # Solo tiene sentido si el build pasó.
+    needs: build-check
+    runs-on: ubuntu-latest
+    # Sin las credenciales de Cloudflare no hay preview que testear.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # El frontend del preview tiene que pegarle al Worker de preview, que usa
+      # la base nexus-db-preview. Sin esta variable, api.ts cae en el sniffing
+      # de hostname, ve un *.pages.dev y se va derecho al Worker de PRODUCCIÓN.
+      PREVIEW_API_URL: https://nexusfinance-preview.ezequiel-fredes-mondragon.workers.dev/api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy Worker de preview (nexusfinance-preview)
+        # Worker aparte, atado a nexus-db-preview. Nunca toca nexus-db.
+        run: npx wrangler deploy --env preview
+
+      - name: Build apuntando al Worker de preview
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ env.PREVIEW_API_URL }}
+
+      - name: Deploy preview a Cloudflare Pages
+        id: pages
+        run: |
+          # ⚠️ El --branch NUNCA debe ser la production branch del proyecto de
+          # Pages: si lo fuera, esto publicaría en producción y romperíamos la
+          # regla de "el deploy productivo es manual". Por eso el nombre
+          # sintético ci-<run_number>, que jamás coincide con main.
+          out=$(npx wrangler pages deploy dist \
+                  --project-name=nexusfinance \
+                  --branch="ci-${{ github.run_number }}" \
+                  --commit-dirty=true 2>&1 | tee /dev/stderr)
+          url=$(echo "$out" | grep -oE 'https://[a-z0-9]+\.nexusfinance\.pages\.dev' | tail -1)
+          if [ -z "$url" ]; then
+            echo "::error::No se pudo extraer la URL del preview deploy"
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "::notice::Preview desplegado en $url"
+
+      - name: Instalar navegadores de Playwright
+        # Los dos proyectos (chromium y mobile-chrome) usan chromium.
+        run: npx playwright install --with-deps chromium
+
+      - name: Correr E2E contra el preview
+        run: npx playwright test
+        env:
+          E2E_BASE_URL: ${{ steps.pages.outputs.url }}
+
+      - name: Subir reporte de Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_number }}
+          path: playwright-report/
           retention-days: 7

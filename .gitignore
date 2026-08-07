@@ -38,6 +38,12 @@ build/
 .wrangler/
 .wrangler
 
+# Playwright — outputs de las corridas, no van al repo
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Vite
 vite.config.ts.timestamp*
 
