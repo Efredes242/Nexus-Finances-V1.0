@@ -38,5 +38,33 @@ build/
 .wrangler/
 .wrangler
 
+# Playwright — outputs de las corridas, no van al repo
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Vite
 vite.config.ts.timestamp*
+
+# Backups locales y scripts de utilidad — no van al repo
+backups/
+backup_prod_*.sql
+check_*.cjs
+check_*.sql
+inspect_db.*
+migrate_*.cjs
+migrate_paid_status.sql
+migrate_prod.sql
+migration.sql
+ULTIMOS_CAMBIOS_BACKUP.md
+*.bak
+
+# Backup tomado antes de feature de Telegram
+src/worker.ts.pre-telegram.bak
+
+# Outputs locales y backups antiguos
+pages_list.txt
+test_dump.sql
+wrangler.toml.bak*
+src_backup_*/

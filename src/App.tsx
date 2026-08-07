@@ -32,7 +32,9 @@ import { LandingView } from './views/LandingView';
 import { APP_TITLE_PREFIX, APP_TITLE_SUFFIX, APP_SUBTITLE } from './config/constants';
 import { parseDocument } from './services/geminiService';
 import { api } from './services/api';
-import { exportToExcel } from './utils/excelExport';
+// excelExport y xlsx-js-style se importan dinámicamente en handleExportExcel para
+// que no entren en el bundle inicial (xlsx pesa ~360KB gz). El usuario sólo paga
+// ese costo si efectivamente exporta.
 import { generateUUID, isUsdTargetEntry } from './utils/helpers';
 import { useToast } from './components/Toast';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -986,6 +988,60 @@ const App: React.FC = () => {
 
     if (!entryToDelete) return;
 
+    // Bloquear el borrado de COPIAS de un grupo "REPETIR". El usuario tiene
+    // que ir al original y bajar el contador de meses para que se eliminen.
+    if (entryToDelete.repeatRef) {
+      console.log('[deleteEntry] Blocked: copy of repeat group, edit the original instead');
+      // Sin alert intrusivo — la UI ya deshabilita el botón. Esto es defensa
+      // en profundidad por si llega un delete por otro camino.
+      return;
+    }
+
+    // Si es ORIGINAL de un grupo, cascadear el borrado a todas las copias.
+    const cascadeCopies = allEntries.filter(
+      e => e.repeatRef === entryToDelete.id && e.id !== entryToDelete.id
+    );
+    if (cascadeCopies.length > 0) {
+      for (const copy of cascadeCopies) {
+        api.deleteEntry(copy.id).catch(e => console.error('cascade delete failed:', e));
+        setState(prev => {
+          const mb = prev.budgets[copy.month_year || copy.date.slice(0, 7)];
+          if (!mb) return prev;
+          return {
+            ...prev,
+            budgets: {
+              ...prev.budgets,
+              [copy.month_year || copy.date.slice(0, 7)]: {
+                ...mb,
+                entries: mb.entries.filter(e => e.id !== copy.id)
+              }
+            }
+          };
+        });
+      }
+    }
+
+    // Fast path para entries del bot de Telegram pendientes de revisión:
+    // el usuario las descarta concientemente desde el banner. No queremos
+    // el "Deshacer" de 5 segundos porque si recarga la página antes de que
+    // venza, el setTimeout se pierde y la entry queda en la DB → reaparece.
+    const isTelegramPending = id.startsWith('tg_') && !!entryToDelete.is_provisional;
+    if (isTelegramPending) {
+      setState(prev => {
+        const monthBudget = prev.budgets[entryMonth];
+        if (!monthBudget) return prev;
+        return {
+          ...prev,
+          budgets: {
+            ...prev.budgets,
+            [entryMonth]: { ...monthBudget, entries: monthBudget.entries.filter(e => e.id !== id) }
+          }
+        };
+      });
+      api.deleteEntry(id).catch(e => console.error('Failed to delete TG pending entry:', e));
+      return;
+    }
+
     // 1. Optimistic UI delete
     setState(prev => {
       const monthBudget = prev.budgets[entryMonth];
@@ -1002,10 +1058,13 @@ const App: React.FC = () => {
       };
     });
 
-    // 2. Clear old toast if exists
-    if (undoToast.timeoutId) clearTimeout(undoToast.timeoutId);
-
-    // 3. Start timer for actual API delete
+    // 2. Start timer for actual API delete.
+    // OJO: NO cancelamos timers de borrados anteriores. Cada delete tiene su
+    // propio timer independiente que ejecuta el DELETE en backend a los 5s.
+    // Antes había un clearTimeout(undoToast.timeoutId) que cancelaba el timer
+    // del item anterior, lo que dejaba items zombie en DB cuando el usuario
+    // borraba varios rápido. El undoToast UI sigue siendo "último gana" —
+    // solo el botón Deshacer del toast actual revierte el último borrado.
     const timeoutId = setTimeout(async () => {
       try {
         await api.deleteEntry(id);
@@ -1021,7 +1080,7 @@ const App: React.FC = () => {
       });
     }, 5000);
 
-    // 4. Show Undo Toast
+    // 3. Show Undo Toast (replaces previous toast UI but doesn't cancel its timer)
     setUndoToast({ entry: entryToDelete, timeoutId, timeLeft: 5 });
   };
 
@@ -1181,14 +1240,20 @@ const App: React.FC = () => {
     return Array.from(names);
   }, [state.installmentPurchases, state.budgets]);
 
-  const handleExportExcel = () => {
-    exportToExcel({
-      currentMonth: state.currentMonth,
-      currentTotals,
-      netFlow,
-      totalGoalsSaved,
-      currentBudgetEntries
-    });
+  const handleExportExcel = async () => {
+    try {
+      const { exportToExcel } = await import('./utils/excelExport');
+      exportToExcel({
+        currentMonth: state.currentMonth,
+        currentTotals,
+        netFlow,
+        totalGoalsSaved,
+        currentBudgetEntries,
+      });
+    } catch (e: any) {
+      console.error('Failed to load Excel exporter', e);
+      toast.error('No se pudo cargar el exportador. Probá recargar la página.');
+    }
   };
 
   // Compute currentYear and currentMonthNum from state.currentMonth
@@ -1317,29 +1382,86 @@ const App: React.FC = () => {
                   }
                 }
 
-                // Guardar entrada original
+                // ─── REPETIR (MESES) — lógica centralizada ─────────────────
+                // Buscamos las copias existentes de este "grupo de repetición"
+                // (entries con repeatRef === entry.id, ordenadas por mes). El
+                // entry actual es el original (modal de copias está bloqueado,
+                // ver EntryModal).
+                const isOriginal = !entry.repeatRef; // null/undefined → soy original
+                const linkedCopies = isOriginal
+                  ? allEntries
+                      .filter(e => e.repeatRef === entry.id && e.id !== entry.id)
+                      .sort((a, b) => (a.month_year || a.date.slice(0, 7)).localeCompare(b.month_year || b.date.slice(0, 7)))
+                  : [];
+
+                // Helper: monthYear desde fecha base + offset (ej. base 2026-05, offset 2 → 2026-07)
+                const buildFutureSlot = (base: string, offset: number) => {
+                  const [y, m, d] = base.split('-').map(Number);
+                  const nd = new Date(y, m - 1 + offset, d);
+                  const ny = nd.getFullYear();
+                  const nm = String(nd.getMonth() + 1).padStart(2, '0');
+                  const ndd = String(nd.getDate()).padStart(2, '0');
+                  return { date: `${ny}-${nm}-${ndd}`, month_year: `${ny}-${nm}` };
+                };
+
+                // Step 1: guardar original siempre. Si NO es nuevo grupo, su
+                // repeatRef ya viene seteado o es null si recién se está creando.
                 saveEntry(entry);
 
-                // Manejar repetición
-                if (repeatMonths && repeatMonths > 1) {
-                  const [y, m, d] = entry.date.split('-').map(Number);
-                  for (let i = 1; i < repeatMonths; i++) {
-                    const nextDate = new Date(y, m - 1 + i, d);
-                    const nextY = nextDate.getFullYear();
-                    const nextM = String(nextDate.getMonth() + 1).padStart(2, '0');
-                    const nextD = String(nextDate.getDate()).padStart(2, '0');
-                    const dateStr = `${nextY}-${nextM}-${nextD}`;
-                    const monthYearStr = `${nextY}-${nextM}`;
+                // Step 2: cascadear cambios de campos a las copias existentes.
+                // Cada copia mantiene su id, date y month_year propios.
+                for (const copy of linkedCopies) {
+                  const updated = {
+                    ...entry,
+                    id: copy.id,
+                    date: copy.date,
+                    month_year: copy.month_year,
+                    repeatRef: entry.id,
+                  };
+                  saveEntry(updated);
+                }
 
-                    const newEntry = {
+                // Step 3: ajustar cantidad. desiredCopies = repeatMonths - 1
+                // (porque "repeatMonths=3" significa original + 2 copias).
+                const desiredCopies = Math.max(0, (repeatMonths || 1) - 1);
+                const currentCopies = linkedCopies.length;
+
+                if (desiredCopies > currentCopies) {
+                  // Crear copias faltantes en los meses siguientes a la última
+                  // copia (o al original si no había copias).
+                  const startSlot = currentCopies > 0
+                    ? linkedCopies[linkedCopies.length - 1].date
+                    : entry.date;
+                  for (let i = 1; i <= desiredCopies - currentCopies; i++) {
+                    const slot = buildFutureSlot(startSlot, i);
+                    const newCopy: BudgetEntry = {
                       ...entry,
-                      id: crypto.randomUUID(),
-                      date: dateStr,
-                      month_year: monthYearStr,
-                      // Limpiar campos que no deberían repetirse idénticos si fuera necesario, 
-                      // pero para "gasto fijo" suelen ser iguales.
+                      id: generateUUID(),
+                      date: slot.date,
+                      month_year: slot.month_year,
+                      repeatRef: entry.id,
                     };
-                    saveEntry(newEntry);
+                    saveEntry(newCopy);
+                  }
+                } else if (desiredCopies < currentCopies) {
+                  // Borrar las copias del FINAL (mes más reciente primero).
+                  const toDelete = linkedCopies.slice(desiredCopies);
+                  for (const copy of toDelete) {
+                    api.deleteEntry(copy.id).catch(e => console.error('cascade delete failed:', e));
+                    setState(prev => {
+                      const monthBudget = prev.budgets[copy.month_year || copy.date.slice(0, 7)];
+                      if (!monthBudget) return prev;
+                      return {
+                        ...prev,
+                        budgets: {
+                          ...prev.budgets,
+                          [copy.month_year || copy.date.slice(0, 7)]: {
+                            ...monthBudget,
+                            entries: monthBudget.entries.filter(e => e.id !== copy.id)
+                          }
+                        }
+                      };
+                    });
                   }
                 }
               }}
@@ -1355,6 +1477,16 @@ const App: React.FC = () => {
                 api.saveConfig(newConfig);
               }}
               allEntries={allEntries}
+              onNavigateToOriginal={(orig) => {
+                // Cerrar el modal actual, switchear al mes del original y
+                // re-abrirlo. El timeout es para que el state.currentMonth
+                // propague antes del re-open (si no, el modal abre con el mes
+                // viejo y el flow no se entiende).
+                setEditingEntry(null);
+                const targetMonth = orig.month_year || orig.date?.slice(0, 7) || state.currentMonth;
+                setState(prev => ({ ...prev, currentMonth: targetMonth }));
+                setTimeout(() => setEditingEntry(orig), 60);
+              }}
             />
           )}
 

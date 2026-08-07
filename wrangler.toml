@@ -7,7 +7,45 @@ binding = "DB"
 database_name = "nexus-db"
 database_id = "a2794266-e179-44ca-841e-5b1b3875e779"
 
+# Workers AI — para parser de lenguaje natural en el bot de Telegram
+# (Llama 3.1 8B). Plan free: 10.000 neurons/día, ~30/mensaje → ~300 msgs/día.
+[ai]
+binding = "AI"
 
 [observability]
+enabled = true
+head_sampling_rate = 1
+
+# Cron: recordatorios de pago por Telegram. 12:00 UTC = 9:00 AR (UTC-3).
+# Una sola corrida diaria es suficiente — el cron job dedupea por
+# last_notified_date para no mandar 2 veces el mismo día.
+[triggers]
+crons = ["0 12 * * *"]
+
+# ── Entorno PREVIEW ───────────────────────────────────────────────────────
+# Worker aparte (nexusfinance-preview) con su PROPIA base, para que los E2E
+# del CI nunca escriban en nexus-db. El esquema de nexus-db-preview se clonó
+# de producción con `wrangler d1 export --no-data` (17 tablas, sin datos).
+#
+# Dos detalles que parecen omisiones y no lo son:
+#  1) Se repiten d1_databases/ai/observability porque en wrangler los bloques
+#     de nivel raíz NO se heredan dentro de un [env.*].
+#  2) [triggers] SÍ se hereda (va por la lista de claves heredables, al revés
+#     que los bindings), así que hay que pisarlo con una lista vacía. Si no,
+#     el preview queda con el cron diario de recordatorios de Telegram.
+[env.preview]
+
+[env.preview.triggers]
+crons = []
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "nexus-db-preview"
+database_id = "520cca0c-d7a8-4808-95dd-4fdfb3e0a706"
+
+[env.preview.ai]
+binding = "AI"
+
+[env.preview.observability]
 enabled = true
 head_sampling_rate = 1

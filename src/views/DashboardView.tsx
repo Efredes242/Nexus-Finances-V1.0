@@ -183,7 +183,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 lg:gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
       {/* 0. Header Strip + 2 widgets accionables (3 columnas en desktop, apilados en mobile) */}
 
@@ -195,9 +195,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className={`w-9 h-9 rounded-xl ${monthlySummary.currentNet >= 0 ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/15 text-rose-400 border-rose-500/20'} border flex items-center justify-center`}>
               <i className={`fas ${monthlySummary.currentNet >= 0 ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'} text-sm`}></i>
             </div>
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{greeting}, {user.firstName || user.username}</span>
+            <span className="text-xs lg:text-[10px] font-black text-slate-400 uppercase tracking-widest">{greeting}, {user.firstName || user.username}</span>
           </div>
-          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Balance del mes</p>
+          <p className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Balance del mes</p>
           <p className={`text-3xl font-black tracking-tight ${monthlySummary.currentNet >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
             {monthlySummary.currentNet >= 0 ? '+' : ''}{formatMoney(monthlySummary.currentNet)}
           </p>
@@ -206,7 +206,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             const pctChange = monthlySummary.previousNet !== 0 ? Math.round((diff / Math.abs(monthlySummary.previousNet)) * 100) : null;
             const arrowUp = diff > 0;
             return (
-              <p className="text-[10px] font-bold text-slate-500 mt-1">
+              <p className="text-xs lg:text-[10px] font-bold text-slate-500 mt-1">
                 <i className={`fas ${arrowUp ? 'fa-caret-up text-emerald-400' : 'fa-caret-down text-rose-400'} mr-1`}></i>
                 {arrowUp ? '+' : ''}{formatMoney(diff)}
                 {pctChange !== null && <span className="ml-1">({arrowUp ? '+' : ''}{pctChange}%)</span>}
@@ -246,7 +246,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center justify-center">
             <i className="fas fa-calendar-day text-sm"></i>
           </div>
-          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vencimientos esta semana</span>
+          <span className="text-xs lg:text-[10px] font-black text-slate-400 uppercase tracking-widest">Vencimientos esta semana</span>
         </div>
         {upcomingDue.length === 0 ? (
           <div className="text-center py-4">
@@ -269,10 +269,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   title={`${e.name}${navigate ? ' — click para ir al movimiento' : ''}`}
                   className={`w-full flex items-center gap-2 text-[12px] py-1.5 px-2 -mx-2 rounded-lg transition-colors text-left ${navigate ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'}`}
                 >
-                  <i className={`fas ${cfg?.icon || 'fa-circle'} ${cfg?.color || 'text-slate-400'} text-[10px] w-4 text-center shrink-0`}></i>
+                  <i className={`fas ${cfg?.icon || 'fa-circle'} ${cfg?.color || 'text-slate-400'} text-xs lg:text-[10px] w-4 text-center shrink-0`}></i>
                   <span className="font-bold text-white truncate flex-1 min-w-0">{e.name}</span>
                   <span className="font-mono text-slate-300 whitespace-nowrap text-[11px]">{formatMoney(e.amount)}</span>
-                  <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider whitespace-nowrap">
+                  <span className="text-xs lg:text-[10px] font-black text-amber-400 uppercase tracking-wider whitespace-nowrap">
                     {formatRelativeDate(e.date)}
                   </span>
                 </button>
@@ -288,7 +288,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-400 border border-rose-500/20 flex items-center justify-center">
             <i className="fas fa-fire text-sm"></i>
           </div>
-          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Más gasto del mes</span>
+          <span className="text-xs lg:text-[10px] font-black text-slate-400 uppercase tracking-widest">Más gasto del mes</span>
         </div>
         {!topCategory ? (
           <div className="text-center py-4">
@@ -298,25 +298,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <>
             <p className="text-sm font-black text-white truncate mb-1">{topCategory.category}</p>
             <p className="text-2xl font-black text-rose-400 tracking-tight">{formatMoney(topCategory.total)}</p>
-            {topCategory.pct !== null && (
-              <div className="mt-3">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Presupuesto</span>
-                  <span className={`text-[10px] font-black ${topCategory.pct > 100 ? 'text-rose-400' : topCategory.pct > 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    {topCategory.pct}%
-                  </span>
-                </div>
-                <div className="w-full bg-slate-800/50 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${topCategory.pct > 100 ? 'bg-rose-500' : topCategory.pct > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                    style={{ width: `${Math.min(topCategory.pct, 100)}%` }}
-                  ></div>
-                </div>
-              </div>
-            )}
-            {topCategory.pct === null && (
-              <p className="text-[10px] text-slate-500 italic mt-2">Sin presupuesto definido</p>
-            )}
           </>
         )}
       </Card>
@@ -328,7 +309,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         subtitle="Evolución de ingresos vs gastos proyectados."
         variant="glass"
         headerActions={
-          <div className="hidden sm:flex items-center gap-4 text-[10px] font-black uppercase tracking-widest">
+          <div className="hidden sm:flex items-center gap-4 text-xs lg:text-[10px] font-black uppercase tracking-widest">
             <div className="flex items-center gap-1.5">
               <span className="w-3 h-1 rounded-full" style={{ backgroundColor: primaryHex }}></span>
               <span className="text-slate-300">Ingresos</span>
@@ -340,7 +321,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         }
       >
-        <div className="h-[350px] mt-4">
+        <div className="h-[240px] lg:h-[350px] mt-4">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={trendData} margin={{ top: 30, right: 20, left: 0, bottom: 0 }}>
               <defs>
@@ -436,13 +417,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <i className={`fas ${s.icon} text-xl ${s.color} drop-shadow-md`}></i>
                   </div>
                   <div className="flex items-center gap-1 min-w-0">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">{s.label}</span>
+                    <span className="text-xs lg:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">{s.label}</span>
                     {showSavings && <InfoTooltip content="Suma de depósitos directos a Ahorro + Aportes a Metas." position="top" useIcon />}
                   </div>
                 </div>
                 <p className="text-2xl font-black text-white tracking-tight">{formatMoney(s.total)}</p>
                 {showSavings && (
-                  <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+                  <p className="text-xs lg:text-[10px] font-bold text-slate-500 mt-0.5">
                     Ahorro directo: {formatMoney(currentTotals[CategoryType.SAVINGS] || 0)} · Metas: {formatMoney(totalGoalsSaved)}
                   </p>
                 )}
@@ -458,7 +439,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <Card className="lg:col-span-3" title="Distribución de Gastos" subtitle="Desglose detallado por categorías." variant="glass">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center h-auto lg:h-[400px]">
           {/* Chart */}
-          <div className="h-[300px] lg:h-full flex flex-col items-center justify-center">
+          <div className="h-[240px] lg:h-full flex flex-col items-center justify-center">
             <div className="flex-1 w-full min-h-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -486,7 +467,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             {/* Texto del Total Debajo del Gráfico */}
             <div className="mt-4 text-center">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 block">TOTAL GASTOS</span>
+              <span className="text-xs lg:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 block">TOTAL GASTOS</span>
               <span className="text-3xl font-black text-white drop-shadow-lg">
                 {formatMoney((currentTotals[CategoryType.FIXED_EXPENSE] || 0) + (currentTotals[CategoryType.VARIABLE_EXPENSE] || 0) + (currentTotals[CategoryType.SHARED_EXPENSE] || 0) + (currentTotals[CategoryType.DEBT] || 0) + (currentTotals[CategoryType.SAVINGS] || 0))}
               </span>

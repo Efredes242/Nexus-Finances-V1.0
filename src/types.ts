@@ -77,6 +77,10 @@ export interface BudgetEntry {
   linkedSharedExpense?: string; // ID del gasto compartido vinculado
   linkedIncomeId?: string; // ID del ingreso vinculado (fuente de fondos)
   application?: string; // Aplicación asociada al gasto (e.g. Brubank, Santander)
+  // Vincula entries creadas con la opción "REPETIR (MESES)". Las copias tienen
+  // `repeatRef = id_del_original`; el original tiene `repeatRef = null`.
+  // Permite cascadear edits/deletes y bloquear cambios sobre copias.
+  repeatRef?: string | null;
 }
 
 export interface MonthlyBudget {

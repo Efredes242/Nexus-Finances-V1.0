@@ -16,6 +16,10 @@ interface EntryModalProps {
   onDeleteCard?: (card: string) => void;
   viewMode?: 'monthly' | 'biweekly';
   allEntries: BudgetEntry[];
+  // Si la entry abierta es una COPIA de un grupo "REPETIR", el modal queda
+  // read-only y este callback abre el original (cierra modal + cambia mes +
+  // re-abre con el original).
+  onNavigateToOriginal?: (originalEntry: BudgetEntry) => void;
 }
 
 const CARD_FINANCING_PLANS: Record<string, string[]> = {
@@ -45,8 +49,46 @@ export const EntryModal: React.FC<EntryModalProps> = ({
   goals,
   onDeleteCard,
   viewMode = 'monthly',
-  allEntries
+  allEntries,
+  onNavigateToOriginal,
 }) => {
+  // Detectar si esta entry es una COPIA de un grupo "REPETIR (MESES)".
+  // En ese caso el modal es read-only — los cambios deben hacerse desde el
+  // original. `repeatRef` apunta al id del original; null/undefined → soy
+  // original o entry suelta (sin grupo).
+  const isCopy = !!entry.repeatRef && entry.repeatRef !== entry.id;
+  const originalEntry = isCopy
+    ? allEntries.find(e => e.id === entry.repeatRef) || null
+    : null;
+  const monthNamesShort = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const monthNamesLong = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const fmtMonthLong = (my: string) => {
+    const [y, m] = my.split('-');
+    return m ? `${monthNamesLong[parseInt(m, 10) - 1]} ${y}` : my;
+  };
+  const fmtMonthShort = (my: string) => {
+    const [y, m] = my.split('-');
+    return m ? `${monthNamesShort[parseInt(m, 10) - 1]} ${y}` : my;
+  };
+  const originalMonthLabel = originalEntry
+    ? fmtMonthLong(originalEntry.month_year || originalEntry.date?.slice(0, 7) || '')
+    : '';
+
+  // Si esta entry es ORIGINAL de un grupo (no es copia y tiene copias linkeadas)
+  // mostramos un banner espejo en verde indicando que los cambios cascadean.
+  const linkedCopies = (!isCopy
+    ? allEntries
+        .filter(e => e.repeatRef === entry.id && e.id !== entry.id)
+        .sort((a, b) => (a.month_year || a.date?.slice(0, 7) || '').localeCompare(b.month_year || b.date?.slice(0, 7) || ''))
+    : []);
+  const isOriginalWithCopies = linkedCopies.length > 0;
+  // Etiqueta condensada de meses afectados. Hasta 3 → enumera; 4+ → rango.
+  const copiesMonthLabel = (() => {
+    if (linkedCopies.length === 0) return '';
+    const months = linkedCopies.map(e => fmtMonthShort(e.month_year || e.date?.slice(0, 7) || ''));
+    if (months.length <= 3) return months.join(', ');
+    return `${months[0]} → ${months[months.length - 1]} (${months.length} meses)`;
+  })();
   const toast = useToast();
 
   const [localEntry, setLocalEntry] = useState<BudgetEntry>({
@@ -109,7 +151,14 @@ export const EntryModal: React.FC<EntryModalProps> = ({
   // Tag creation state
   const [isAddingTag, setIsAddingTag] = useState(false);
   const [newTag, setNewTag] = useState('');
-  const [repeatMonths, setRepeatMonths] = useState(1);
+  // Si soy original de un grupo REPETIR, el contador inicial = #copias + 1.
+  // Si soy copia o entry suelta, default 1.
+  const initialRepeat = useMemo(() => {
+    if (entry.repeatRef) return 1;
+    const copyCount = allEntries.filter(x => x.repeatRef === entry.id && x.id !== entry.id).length;
+    return copyCount > 0 ? copyCount + 1 : 1;
+  }, [entry, allEntries]);
+  const [repeatMonths, setRepeatMonths] = useState(initialRepeat);
 
   // Determine available plans based on selected card
   const getAvailablePlans = () => {
@@ -253,7 +302,51 @@ export const EntryModal: React.FC<EntryModalProps> = ({
     <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-300">
       <Card title="Detalle del Movimiento" className="w-full sm:max-w-xl shadow-[0_0_100px_rgba(0,0,0,0.8)] border-x-0 border-b-0 sm:border border-white/10 flex flex-col h-[95dvh] sm:h-[85dvh] rounded-t-2xl rounded-b-none sm:rounded-2xl" noPadding>
         <div className="flex flex-col h-full overflow-hidden min-h-0 relative">
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 pb-4">
+
+          {/* Banner read-only cuando la entry es copia de un grupo REPETIR.
+              Los inputs del form quedan deshabilitados (pointer-events-none)
+              pero este banner sigue clickeable para ir al original. */}
+          {isCopy && (
+            <div className="bg-amber-500/15 border-b border-amber-500/30 p-3 flex items-center gap-3">
+              <i className="fas fa-link text-amber-400 text-lg flex-shrink-0"></i>
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-black uppercase tracking-widest text-amber-400">
+                  Copia · solo lectura
+                </div>
+                <div className="text-xs text-slate-300 mt-0.5">
+                  Original en <span className="font-bold text-white">{originalMonthLabel || '—'}</span>. Editá ahí para cambiar todas las copias.
+                </div>
+              </div>
+              {originalEntry && onNavigateToOriginal && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateToOriginal(originalEntry)}
+                  className="text-[10px] uppercase tracking-wider font-black text-amber-400 hover:text-white px-3 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500 transition-colors flex-shrink-0"
+                  title="Ir al original"
+                >
+                  <i className="fas fa-arrow-right mr-1"></i>Ir al original
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Banner espejo cuando la entry es el ORIGINAL de un grupo REPETIR.
+              Avisa que los cambios cascadean a las copias listadas. */}
+          {isOriginalWithCopies && (
+            <div className="bg-emerald-500/15 border-b border-emerald-500/30 p-3 flex items-center gap-3">
+              <i className="fas fa-link text-emerald-400 text-lg flex-shrink-0"></i>
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-black uppercase tracking-widest text-emerald-400">
+                  Original · cambios en cascada
+                </div>
+                <div className="text-xs text-slate-300 mt-0.5">
+                  Lo que modifiques acá se aplica también en: <span className="font-bold text-white">{copiesMonthLabel}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className={`flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 pb-4 ${isCopy ? 'pointer-events-none opacity-60 select-none' : ''}`}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {/* 1. MONEDA Y MONTOS */}
               <div className="col-span-1 sm:col-span-2 space-y-3 bg-slate-800/50 p-3 rounded-xl border border-white/5">
@@ -846,8 +939,14 @@ export const EntryModal: React.FC<EntryModalProps> = ({
           </div>
           <div className="p-4 bg-slate-900/95 border-t border-white/10 shrink-0 z-20">
             <div className="flex gap-3">
-              <Button variant="outline" className="flex-1 rounded-xl py-3 text-sm" onClick={onClose}>Cancelar</Button>
-              <Button className="flex-1 rounded-xl py-3 text-sm" onClick={handleSave}>Guardar</Button>
+              {isCopy ? (
+                <Button className="flex-1 rounded-xl py-3 text-sm" onClick={onClose}>Cerrar</Button>
+              ) : (
+                <>
+                  <Button variant="outline" className="flex-1 rounded-xl py-3 text-sm" onClick={onClose}>Cancelar</Button>
+                  <Button className="flex-1 rounded-xl py-3 text-sm" onClick={handleSave}>Guardar</Button>
+                </>
+              )}
             </div>
           </div>
         </div>

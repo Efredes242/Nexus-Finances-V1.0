@@ -5,8 +5,16 @@ const hostname = window.location.hostname;
 
 let API_URL = '/api';
 
-// Si estamos en Cloudflare Pages o en el dominio personalizado, usar la URL del Worker
-if (hostname.includes('pages.dev') || hostname.includes('ezequielfredes.com.ar')) {
+// Override explícito en tiempo de build. Lo usa el preview deploy del CI para
+// apuntar al Worker de preview (con su propia D1) en vez de al de producción:
+// sin esto, cualquier host *.pages.dev cae en la rama de abajo y escribe en la
+// base real. En build normal la variable no existe y el comportamiento no cambia.
+const envApiUrl = import.meta.env.VITE_API_URL;
+
+if (envApiUrl) {
+  API_URL = envApiUrl;
+} else if (hostname.includes('pages.dev') || hostname.includes('ezequielfredes.com.ar')) {
+  // Si estamos en Cloudflare Pages o en el dominio personalizado, usar la URL del Worker
   API_URL = 'https://nexusfinance.ezequiel-fredes-mondragon.workers.dev/api';
 } else if (hostname === 'localhost' || hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
   // Development independent frontend (Vite default 5173) -> Target 3001
@@ -582,5 +590,73 @@ export const api = {
       body: JSON.stringify({ decision })
     });
     return handleResponse(res);
+  },
+
+  // ─── Dólar BBVA history ───
+  async dolarSnapshot(compra: number, venta: number, source = 'bbva') {
+    const res = await fetch(`${API_URL}/dolar/snapshot`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ compra, venta, source }),
+    });
+    return handleResponse(res);
+  },
+  // ─── Reminders / Calendario ───
+  async getReminders() {
+    const res = await fetch(`${API_URL}/reminders`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    return handleResponse(res) as Promise<Array<{
+      id: string; title: string; amount: number | null;
+      payment_date: string; notify_from_date: string;
+      last_notified_date: string | null;
+      status: 'pending' | 'paid' | 'cancelled';
+      notes: string | null;
+      created_at: number; updated_at: number;
+    }>>;
+  },
+  async createReminder(data: { title: string; amount?: number | null; payment_date: string; notify_from_date?: string; notes?: string; entry_id?: string }) {
+    const res = await fetch(`${API_URL}/reminders`, {
+      method: 'POST', headers: getHeaders(), body: JSON.stringify(data),
+    });
+    return handleResponse(res);
+  },
+  async getReminderByEntry(entryId: string) {
+    const res = await fetch(`${API_URL}/reminders/by-entry/${encodeURIComponent(entryId)}`, {
+      method: 'GET', headers: getHeaders(),
+    });
+    return handleResponse(res) as Promise<null | {
+      id: string; title: string; amount: number | null;
+      payment_date: string; notify_from_date: string;
+      status: 'pending' | 'paid' | 'cancelled';
+      entry_id: string | null;
+    }>;
+  },
+  async updateReminder(id: string, data: Partial<{ title: string; amount: number | null; payment_date: string; notify_from_date: string; status: 'pending' | 'paid' | 'cancelled'; notes: string }>) {
+    const res = await fetch(`${API_URL}/reminders/${id}`, {
+      method: 'PUT', headers: getHeaders(), body: JSON.stringify(data),
+    });
+    return handleResponse(res);
+  },
+  async deleteReminder(id: string) {
+    const res = await fetch(`${API_URL}/reminders/${id}`, {
+      method: 'DELETE', headers: getHeaders(),
+    });
+    return handleResponse(res);
+  },
+  async markReminderPaid(id: string) {
+    const res = await fetch(`${API_URL}/reminders/${id}/paid`, {
+      method: 'POST', headers: getHeaders(),
+    });
+    return handleResponse(res);
+  },
+
+  async dolarHistory(days = 30, source = 'bbva') {
+    const res = await fetch(`${API_URL}/dolar/history?days=${days}&source=${source}`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    return handleResponse(res) as Promise<Array<{ date: string; compra: number; venta: number; snapshot_at: number }>>;
   },
 };

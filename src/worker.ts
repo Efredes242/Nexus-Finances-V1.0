@@ -8,6 +8,9 @@ import bcrypt from 'bcryptjs';
 type Bindings = {
     DB: D1Database;
     JWT_SECRET: string;
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_ALLOWED_CHAT_ID?: string;
+    TELEGRAM_USER_ID?: string;
 };
 
 type Variables = {
@@ -364,8 +367,11 @@ app.get('/api/data', authMiddleware, async (c) => {
     // If the frontend doesn't send a year, default to the current year.
     const year = c.req.query('year') || new Date().getFullYear().toString();
 
+    // Excluímos rows con deleted=1 (soft-delete que viene del frontend para
+    // virtuales — `inst-*`, `card-agg-*`, etc.). La columna se agregó en una
+    // migración tardía, por eso toleramos NULL como vivo.
     const results = await c.env.DB.prepare(
-        'SELECT *, linked_income_id AS linkedIncomeId FROM entries WHERE user_id = ? AND month_year LIKE ? ORDER BY month_year ASC'
+        'SELECT *, linked_income_id AS linkedIncomeId FROM entries WHERE user_id = ? AND month_year LIKE ? AND (deleted IS NULL OR deleted = 0) ORDER BY month_year ASC'
     ).bind(user.id, `${year}-%`).all();
 
     return c.json(results.results);
@@ -410,35 +416,42 @@ app.post('/api/entries', authMiddleware, async (c) => {
         const is_provisional = body.is_provisional ? 1 : 0;
         const linked_income_id = body.linkedIncomeId || null;
         const application = body.application || null;
+        // Soft-delete persistido. El frontend lo envía como `deleted: true` en
+        // saveEntry para virtuales (inst-*, card-agg-*) — antes se ignoraba
+        // por falta de columna; ahora se guarda y se filtra en GET y en el bot.
+        const deleted = body.deleted ? 1 : 0;
+        // Vincula copias de "REPETIR (MESES)" con su original. null en el
+        // original; el id del original en cada copia.
+        const repeatRef = body.repeatRef || null;
 
         if (exists) {
             console.log(`[POST /entries] Updating existing entry ${id}`);
             const updateSql = `
-                UPDATE entries 
-                SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?, 
-                    cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?, 
-                    exchangeRateActual = ?, is_provisional = ?, linked_income_id = ?, application = ?
+                UPDATE entries
+                SET name = ?, amount = ?, category = ?, tag = ?, date = ?, paymentMethod = ?, status = ?, month_year = ?,
+                    cardName = ?, financingPlan = ?, originalAmount = ?, currency = ?, exchangeRateEstimated = ?,
+                    exchangeRateActual = ?, is_provisional = ?, linked_income_id = ?, application = ?, deleted = ?, repeatRef = ?
                 WHERE id = ? AND user_id = ?
             `;
             const updateBindings = [
                 name, amount, category, tag, date, paymentMethod, status, month_year,
                 cardName, financingPlan, originalAmount, currency, exchangeRateEstimated,
-                exchangeRateActual, is_provisional, linked_income_id, application, id, user.id
+                exchangeRateActual, is_provisional, linked_income_id, application, deleted, repeatRef, id, user.id
             ];
             await c.env.DB.prepare(updateSql).bind(...updateBindings).run();
         } else {
             console.log(`[POST /entries] Inserting new entry ${id}`);
             const insertSql = `
                 INSERT INTO entries (
-                    id, name, amount, category, tag, date, paymentMethod, status, month_year, 
-                    cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated, 
-                    exchangeRateActual, is_provisional, linked_income_id, application
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, name, amount, category, tag, date, paymentMethod, status, month_year,
+                    cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated,
+                    exchangeRateActual, is_provisional, linked_income_id, application, deleted, repeatRef
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             const insertBindings = [
                 id, name, amount, category, tag, date, paymentMethod, status, month_year,
                 cardName, financingPlan, user.id, originalAmount, currency, exchangeRateEstimated,
-                exchangeRateActual, is_provisional, linked_income_id, application
+                exchangeRateActual, is_provisional, linked_income_id, application, deleted, repeatRef
             ];
             await c.env.DB.prepare(insertSql).bind(...insertBindings).run();
         }
@@ -1716,6 +1729,919 @@ app.delete('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (c
         console.error(`[DELETE / api / admin / users / ${userId}]Error: `, e);
         return c.json({ error: 'Database error', details: e.message }, 500);
     }
+});
+
+// =====================================================================
+// Telegram Bot — quick-add entries from chat
+// Webhook receives Telegram updates, validates chat_id, parses commands,
+// inserts entries attributed to TELEGRAM_USER_ID. Bootstrap mode (no
+// whitelist set yet) replies with the caller's chat_id so the owner can
+// register it as a secret without ever leaving the bot wide open.
+// =====================================================================
+
+// Telegram corta sendMessage en 4096 chars. Splitteamos por líneas para no
+// cortar palabras al medio. Cada chunk va como un mensaje separado.
+function tgSplitMessage(text: string, max = 3800): string[] {
+    if (text.length <= max) return [text];
+    const out: string[] = [];
+    let cur = '';
+    for (const line of text.split('\n')) {
+        if ((cur ? cur.length + 1 : 0) + line.length > max) {
+            if (cur) out.push(cur);
+            // Línea individual más larga que max → cortar bruto
+            if (line.length > max) {
+                for (let i = 0; i < line.length; i += max) {
+                    out.push(line.slice(i, i + max));
+                }
+                cur = '';
+            } else {
+                cur = line;
+            }
+        } else {
+            cur = cur ? `${cur}\n${line}` : line;
+        }
+    }
+    if (cur) out.push(cur);
+    return out;
+}
+
+async function tgSend(
+    token: string,
+    chatId: string | number,
+    text: string,
+    replyMarkup?: any,
+) {
+    const chunks = tgSplitMessage(text);
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        // El reply_markup va sólo en el último chunk para evitar teclados duplicados.
+        const isLast = i === chunks.length - 1;
+        const body: any = { chat_id: chatId, text: chunk };
+        if (isLast && replyMarkup) body.reply_markup = replyMarkup;
+        try {
+            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data: any = await res.json().catch(() => ({}));
+            console.log(`[telegram] sendMessage status=${res.status} ok=${data?.ok} chunk=${chunk.length}`);
+        } catch (e: any) {
+            console.error('[telegram] sendMessage threw:', e?.message || String(e));
+        }
+    }
+}
+
+// Resuelve el "spinner" del botón inline una vez que procesamos el callback.
+// Sin esto, Telegram muestra "loading" infinito en la UI del usuario.
+async function tgAnswerCallback(token: string, callbackQueryId: string, text?: string) {
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: callbackQueryId, text: text || '' }),
+        });
+    } catch (e: any) {
+        console.error('[telegram] answerCallbackQuery threw:', e?.message || String(e));
+    }
+}
+
+// Builder del teclado inline con los 12 meses del año dado. 3 columnas x 4 filas.
+// callback_data formato: "reg:YYYY-MM" para que el handler de callbacks lo parsee.
+function tgBuildMonthKeyboard(year: number): any {
+    const labels = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+    const rows: any[][] = [];
+    for (let r = 0; r < 4; r++) {
+        const row: any[] = [];
+        for (let c = 0; c < 3; c++) {
+            const idx = r * 3 + c;
+            const monthNum = String(idx + 1).padStart(2, '0');
+            row.push({
+                text: labels[idx],
+                callback_data: `reg:${year}-${monthNum}`,
+            });
+        }
+        rows.push(row);
+    }
+    return { inline_keyboard: rows };
+}
+
+// Acepta "15000", "15.000", "15,5", "1.234,56", "15k", "1.5k"
+function parseAmount(input: string): number {
+    const s = input.trim();
+    const kMatch = s.match(/^([\d.,]+)\s*k$/i);
+    if (kMatch) {
+        const n = parseFloat(kMatch[1].replace(/\./g, '').replace(',', '.'));
+        return isNaN(n) ? NaN : n * 1000;
+    }
+    if (s.includes(',') && s.includes('.')) {
+        return parseFloat(s.replace(/\./g, '').replace(',', '.'));
+    }
+    if (s.includes(',')) {
+        return parseFloat(s.replace(',', '.'));
+    }
+    // Sólo puntos con grupos de 3 dígitos → separador de miles es-AR
+    if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
+        return parseFloat(s.replace(/\./g, ''));
+    }
+    return parseFloat(s);
+}
+
+function fmtMoney(n: number): string {
+    return new Intl.NumberFormat('es-AR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(n);
+}
+
+const TG_HELP = [
+    'Nexus Finance Bot',
+    '',
+    'Cargar gastos:',
+    'Empezá la oracion con "Gaste" (o "Gasté").',
+    'Formato: Gaste <monto> <subcategoria> [descripcion]',
+    '',
+    'Ejemplos:',
+    '· Gaste 15000 supermercado milanesas',
+    '· Gaste 5k nafta',
+    '· Gaste 15000 super, 5000 nafta, 2000 farmacia',
+    '· Gaste 15k super y 5k nafta',
+    '',
+    'Cargar ingresos:',
+    'Ingrese <monto> [descripcion]',
+    'Ej: Ingrese 500000 sueldo abril',
+    '',
+    'Consultar registros:',
+    '/registros — abre menú con los meses del año actual',
+    '/registros abril — directo al mes',
+    '/registros 2026-04 — formato ISO',
+    '',
+    'Otros:',
+    '/help — esta ayuda',
+    '',
+    'Montos: 15000, 15.000, 15,5k o 15k. Se registran con la fecha de hoy.',
+    '',
+    'Importante: los movimientos quedan PENDIENTES de revisión.',
+    'Confirmalos o eliminalos desde el banner cyan en Movimientos.',
+].join('\n');
+
+// Acentos fuera, lowercase. Para matchear "gaste"/"gasté" sin escribir dos veces.
+// Construimos el rango de combining diacriticals (U+0300..U+036F) con RegExp(...)
+// en runtime para no depender del encoding del archivo fuente.
+const _TG_DIACRITICS = new RegExp('[\\u0300-\\u036f]', 'g');
+function tgNormalize(s: string): string {
+    return s.normalize('NFD').replace(_TG_DIACRITICS, '').toLowerCase();
+}
+
+interface ParsedSegment {
+    amount: number;
+    tag: string;
+    name: string;
+}
+
+// "15000 super milanesas" → { amount: 15000, tag: "super", name: "milanesas" }
+// "5k nafta" → { amount: 5000, tag: "nafta", name: "nafta" }
+// Si falla devuelve string con el motivo.
+function tgParseSegment(seg: string, isIncome: boolean): ParsedSegment | string {
+    const tokens = seg.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return 'segmento vacio';
+
+    const amount = parseAmount(tokens[0]);
+    if (isNaN(amount) || amount <= 0) return `monto invalido "${tokens[0]}"`;
+
+    if (isIncome) {
+        const name = tokens.slice(1).join(' ') || 'Ingreso';
+        return { amount, tag: 'Sueldo', name };
+    }
+
+    if (tokens.length < 2) return 'falta subcategoria';
+    const tag = tokens[1];
+    const name = tokens.slice(2).join(' ') || tag;
+    return { amount, tag, name };
+}
+
+// Splits a body con múltiples gastos. Soporta coma, punto y coma, salto de
+// linea, "+" y " y " (sólo si lo siguiente arranca con dígito, para no romper
+// descripciones tipo "manzana y banana").
+function tgSplitSegments(body: string): string[] {
+    return body
+        .split(/[,;\n+]|\s+y\s+(?=\d)/i)
+        .map(p => p.trim())
+        .filter(Boolean);
+}
+
+async function tgInsertEntry(
+    db: D1Database,
+    userId: string,
+    seg: ParsedSegment,
+    isIncome: boolean,
+): Promise<{ date: string; category: string }> {
+    const id = `tg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const date = new Date().toISOString().split('T')[0];
+    const month_year = date.substring(0, 7);
+    const category = isIncome ? 'Ingresos' : 'Gastos Variables';
+    const status = 'Pagado';
+    const paymentMethod = 'Efectivo';
+    // 'ARS' en vez de '$' para que el modal abra en modo pesos (sin
+    // cotización USD). is_provisional=1 para que queden pendientes de
+    // revisión: aparecen sólo en el banner de Movimientos hasta que el
+    // usuario las confirme.
+    const currency = 'ARS';
+
+    const sql = `INSERT OR REPLACE INTO entries (
+        id, name, amount, category, tag, date, paymentMethod, status, month_year,
+        cardName, financingPlan, user_id, originalAmount, currency, exchangeRateEstimated,
+        exchangeRateActual, is_provisional, linked_income_id, application
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const bindings = [
+        id, seg.name, seg.amount, category, seg.tag, date, paymentMethod, status, month_year,
+        null, null, userId, seg.amount, currency, 1,
+        1, 1, null, null,
+    ];
+
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await db.prepare(sql).bind(...bindings).run();
+            lastErr = null;
+            break;
+        } catch (e: any) {
+            lastErr = e;
+            const msg = e?.message || String(e);
+            const transient = /D1_ERROR|exceeded timeout|object to be reset|ECONNRESET/i.test(msg);
+            console.warn(`[telegram] insert attempt ${attempt} failed (transient=${transient}): ${msg}`);
+            if (!transient || attempt === 3) break;
+            await new Promise(r => setTimeout(r, 250 * attempt));
+        }
+    }
+    if (lastErr) throw lastErr;
+
+    return { date, category };
+}
+
+// Procesa un mensaje completo, soporta multi-segmento separado por coma/y/etc.
+// Si registra exactamente 1 gasto, pregunta al final si quiere agregar otro
+// (sin estado: cualquier mensaje siguiente que arranque con "Gaste" se procesa
+// igual). Si registra varios, devuelve un resumen con total.
+async function tgHandleAddCommand(
+    db: D1Database,
+    userId: string,
+    body: string,
+    isIncome: boolean,
+): Promise<string> {
+    const segments = tgSplitSegments(body);
+    if (segments.length === 0) {
+        return isIncome
+            ? '⚠️ Falta el detalle del ingreso. Ej: Ingrese 500000 sueldo'
+            : '⚠️ Falta el detalle del gasto. Ej: Gaste 15000 super milanesas';
+    }
+
+    const okLines: string[] = [];
+    const errLines: string[] = [];
+    let total = 0;
+    let date = '';
+
+    for (const seg of segments) {
+        const parsed = tgParseSegment(seg, isIncome);
+        if (typeof parsed === 'string') {
+            errLines.push(`❌ "${seg}" — ${parsed}`);
+            continue;
+        }
+        try {
+            const r = await tgInsertEntry(db, userId, parsed, isIncome);
+            date = r.date;
+            total += parsed.amount;
+            okLines.push(`✅ ${parsed.name} · $${fmtMoney(parsed.amount)} (${parsed.tag})`);
+        } catch (e: any) {
+            errLines.push(`❌ "${parsed.name}" — error de base de datos`);
+        }
+    }
+
+    const okCount = okLines.length;
+    const errCount = errLines.length;
+
+    if (okCount === 0) {
+        return ['No pude registrar nada:', ...errLines].join('\n');
+    }
+
+    const tipo = isIncome ? 'Ingreso' : 'Gasto';
+    const tipoPlural = isIncome ? 'ingresos' : 'gastos';
+
+    if (okCount === 1 && errCount === 0) {
+        return [
+            `💸 ${tipo} encolado:`,
+            ...okLines,
+            `📅 ${date}`,
+            '',
+            `Pendiente de revisión: confirmalo o eliminalo desde el banner cyan en Movimientos.`,
+            '',
+            `¿Querés agregar otro ${tipo.toLowerCase()}? Mandame el siguiente o escribí "listo" cuando termines.`,
+        ].join('\n');
+    }
+
+    const summary = [
+        `✅ ${okCount} ${tipoPlural} encolado${okCount === 1 ? '' : 's'} · Total $${fmtMoney(total)}`,
+        '',
+        ...okLines,
+    ];
+    if (errCount > 0) {
+        summary.push('', ...errLines);
+    }
+    summary.push('', `📅 ${date}`);
+    summary.push('', 'Pendientes de revisión: confirmalos desde el banner de Movimientos en la web.');
+    return summary.join('\n');
+}
+
+// =====================================================================
+// /registros — query de movimientos por mes
+// =====================================================================
+
+const TG_SPANISH_MONTHS: Record<string, string> = {
+    enero: '01', febrero: '02', marzo: '03', abril: '04',
+    mayo: '05', junio: '06', julio: '07', agosto: '08',
+    septiembre: '09', setiembre: '09', octubre: '10',
+    noviembre: '11', diciembre: '12',
+};
+
+const TG_MONTH_LABEL: Record<string, string> = {
+    '01': 'Enero', '02': 'Febrero', '03': 'Marzo', '04': 'Abril',
+    '05': 'Mayo', '06': 'Junio', '07': 'Julio', '08': 'Agosto',
+    '09': 'Septiembre', '10': 'Octubre', '11': 'Noviembre', '12': 'Diciembre',
+};
+
+const TG_CATEGORY_ORDER = [
+    'Ingresos', 'Gastos Fijos', 'Gastos Variables',
+    'Gastos Compartidos', 'Deudas', 'Ahorros',
+];
+
+const TG_CATEGORY_EMOJI: Record<string, string> = {
+    'Ingresos': '💰',
+    'Gastos Fijos': '🧾',
+    'Gastos Variables': '🛒',
+    'Gastos Compartidos': '👥',
+    'Deudas': '💳',
+    'Ahorros': '🐷',
+};
+
+// Parsea argumento del comando /registros. Acepta:
+//   ""              → mes actual
+//   "2026-04"       → ISO directo
+//   "04/2026"       → MM/YYYY o MM-YYYY
+//   "abril 2026"    → mes en español + año
+//   "abril"         → mes en español (año actual)
+// Devuelve "" si no pudo parsear.
+function tgParseMonthArg(arg: string): string {
+    const now = new Date();
+    if (!arg.trim()) {
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
+    const s = arg.trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+    m = s.match(/^(\d{1,2})[\/\-](\d{4})$/);
+    if (m) return `${m[2]}-${m[1].padStart(2, '0')}`;
+    const tokens = tgNormalize(s).split(/\s+/).filter(Boolean);
+    let monthNum: string | null = null;
+    let year = String(now.getFullYear());
+    for (const t of tokens) {
+        if (TG_SPANISH_MONTHS[t]) monthNum = TG_SPANISH_MONTHS[t];
+        else if (/^\d{4}$/.test(t)) year = t;
+        else if (/^\d{1,2}$/.test(t)) monthNum = t.padStart(2, '0');
+    }
+    return monthNum ? `${year}-${monthNum}` : '';
+}
+
+function tgFormatAmount(e: any): string {
+    const isUsd = e.currency && e.currency !== 'ARS' && e.currency !== '$' &&
+                  typeof e.originalAmount === 'number' && e.originalAmount > 0;
+    if (isUsd) {
+        return `${e.currency} ${fmtMoney(e.originalAmount)} (≈ $${fmtMoney(e.amount || 0)})`;
+    }
+    return `$${fmtMoney(e.amount || 0)}`;
+}
+
+// Sub-entry indentada bajo un agregado de tarjeta. Más sintética: 1 línea por
+// item, con prefijo de bullet para que se vea como una lista colgante.
+function tgFormatSubEntry(e: any): string {
+    const tgMark = String(e.id || '').startsWith('tg_') ? ' 📱' : '';
+    const name = e.name || 'sin nombre';
+    return `      ↳${tgMark} ${name} · ${tgFormatAmount(e)}`;
+}
+
+// Cada entry padre ocupa 2 líneas: nombre arriba (con icono de estado), monto
+// + tag abajo. Si tiene subEntries (agrupación de tarjeta), se cuelgan
+// indentadas debajo. La línea en blanco entre bloques la pone el caller.
+//
+// Las agrupaciones de tarjeta usan 💳 en vez del icono de estado para que se
+// distingan a simple vista de los gastos sueltos.
+function tgFormatEntry(e: any): string {
+    const id = String(e.id || '');
+    const isCardAgg = id.startsWith('tg-card-agg-');
+    let statusIcon: string;
+    if (isCardAgg) {
+        statusIcon = '💳';
+    } else {
+        const isPending = !!e.is_provisional;
+        statusIcon = isPending ? '🟡' : (
+            (e.status === 'Pagado' || e.status === 'Paid' || e.status === 'PAID') ? '✅' : '⏳'
+        );
+    }
+    const tgMark = id.startsWith('tg_') ? ' 📱' : '';
+    const name = e.name || 'sin nombre';
+    const tag = e.tag || '';
+    const amountStr = tgFormatAmount(e);
+    const line2 = tag ? `   ${amountStr} · ${tag}` : `   ${amountStr}`;
+    const lines = [`${statusIcon}${tgMark} ${name}`, line2];
+    const subs = Array.isArray(e.subEntries) ? e.subEntries : [];
+    for (const s of subs) {
+        lines.push(tgFormatSubEntry(s));
+    }
+    return lines.join('\n');
+}
+
+// "2026-05" - "2026-03" = 2. Operates on YYYY-MM strings.
+function tgMonthDiff(from: string, to: string): number {
+    const [fy, fm] = from.split('-').map(Number);
+    const [ty, tm] = to.split('-').map(Number);
+    return (ty - fy) * 12 + (tm - fm);
+}
+
+// Genera entries virtuales para las cuotas activas en `monthYear`. Para cada
+// installment_plan, primero busca el row zombie correspondiente en `entries`
+// (con id `inst-{plan_id}-{yyyy-mm}`): si existe, lo usa tal cual porque el
+// usuario pudo haber tocado campos como cardName / paymentMethod / status. Si
+// no existe, lo regenera desde la tabla `installments`. Esto matchea lo que ve
+// el usuario en la app, donde la cuota aparece bajo el grupo de su tarjeta.
+async function tgFetchInstallmentVirtuals(
+    db: D1Database,
+    userId: string,
+    monthYear: string,
+    zombieInstByBaseId: Record<string, any>,
+): Promise<any[]> {
+    let result: any;
+    try {
+        result = await db.prepare(
+            'SELECT id, name, totalAmount, installments, startDate, category, cardName FROM installments WHERE user_id = ?'
+        ).bind(userId).all();
+    } catch (e) {
+        console.error('[telegram] failed to fetch installments:', e);
+        return [];
+    }
+    const virtuals: any[] = [];
+    for (const p of (result?.results || []) as any[]) {
+        const total = Number(p.totalAmount) || 0;
+        const count = Number(p.installments) || 0;
+        if (!p.startDate || count <= 0) continue;
+        const diff = tgMonthDiff(String(p.startDate), monthYear);
+        if (diff < 0 || diff >= count) continue;
+
+        const zombie = zombieInstByBaseId[p.id];
+        if (zombie) {
+            // Reutilizamos el row zombie — tiene los campos sobreescritos por el
+            // usuario (cardName, paymentMethod, status) que la regeneración pierde.
+            virtuals.push(zombie);
+        } else {
+            virtuals.push({
+                id: `inst-${p.id}-${monthYear}`,
+                name: `${p.name || 'Cuota'} (Cuota ${diff + 1}/${count})`,
+                amount: total / count,
+                category: p.category || 'Gastos Variables',
+                tag: p.cardName ? 'Tarjeta de Crédito' : 'Cuotas',
+                date: monthYear + '-01',
+                status: 'Pendiente',
+                currency: 'ARS',
+                originalAmount: null,
+                is_provisional: 0,
+                paymentMethod: p.cardName ? 'Crédito' : 'Efectivo',
+                cardName: p.cardName || null,
+            });
+        }
+    }
+    return virtuals;
+}
+
+// Prefijos de entries "virtuales" que el frontend recalcula al vuelo. En la DB
+// pueden quedar como rows zombie (cuando el usuario interactúa con un agregado
+// — ej. lo marca como pagado — el upsert las persiste). Si las contamos junto
+// con sus fuentes (ej. card-agg + sus cuotas inst- regeneradas) hacemos doble
+// conteo. Solución: excluir todos los prefijos virtuales de la lista oficial.
+const TG_VIRTUAL_ID_PREFIXES = ['card-agg-', 'inst-', 'shared-', 'virt-', 'income-from-shared-'];
+function tgIsVirtualId(id: string | null | undefined): boolean {
+    if (typeof id !== 'string') return false;
+    return TG_VIRTUAL_ID_PREFIXES.some(p => id.startsWith(p));
+}
+
+// Genera entries virtuales de "Gastos Compartidos" desde la tabla
+// `installment_plans`. La lógica replica la del frontend (sharedPlansVirtuals
+// en App.tsx): para cada plan activo en el mes, si el usuario es payer
+// genera entries de cobro (negativas), si es participant genera entries de
+// pago (positivas).
+async function tgFetchSharedVirtuals(
+    db: D1Database, userId: string, monthYear: string
+): Promise<any[]> {
+    const [yr, mo] = monthYear.split('-').map(Number);
+    if (!yr || !mo) return [];
+
+    let result: any;
+    try {
+        result = await db.prepare(`
+            SELECT ip.id, ip.party_id, ip.description, ip.installments_count, ip.installment_amount,
+                   ip.payer_id, ip.participants, ip.start_date, ip.currency, ip.exchange_rate
+            FROM installment_plans ip
+            JOIN party_members pm ON pm.party_id = ip.party_id
+            WHERE pm.user_id = ? AND pm.status = 'accepted'
+        `).bind(userId).all();
+    } catch (e: any) {
+        console.error('[telegram] failed to fetch shared plans:', e?.message || e);
+        return [];
+    }
+
+    const virtuals: any[] = [];
+    for (const plan of (result?.results || []) as any[]) {
+        const sd = String(plan.start_date || '');
+        const sParts = sd.split('-').map(Number);
+        const startYear = sParts[0];
+        const startMonth = sParts[1];
+        const count = Number(plan.installments_count) || 0;
+        if (!startYear || !startMonth || count <= 0) continue;
+
+        const monthDiff = (yr - startYear) * 12 + (mo - startMonth);
+        if (monthDiff < 0 || monthDiff >= count) continue;
+        const currentNum = monthDiff + 1;
+
+        const rate = Number(plan.exchange_rate) || 1;
+        const native = Number(plan.installment_amount) || 0;
+        const isUSD = plan.currency === 'USD';
+        const ars = isUSD ? native * rate : native;
+
+        let participants: string[] = [];
+        try {
+            participants = typeof plan.participants === 'string'
+                ? JSON.parse(plan.participants)
+                : (Array.isArray(plan.participants) ? plan.participants : []);
+        } catch { participants = []; }
+
+        const isPayer = plan.payer_id === userId;
+        const isParticipant = participants.includes(userId);
+
+        if (isPayer) {
+            // Una virtual por cada deudor — entry "a cobrar" (negativa)
+            for (const pId of participants) {
+                if (pId === userId) continue;
+                virtuals.push({
+                    id: `shared-${plan.id}-${pId}-${monthYear}`,
+                    name: `${plan.description} (Cobro · cuota ${currentNum}/${count})`,
+                    amount: -ars,
+                    category: 'Gastos Compartidos',
+                    tag: 'A cobrar',
+                    date: `${monthYear}-01`,
+                    status: 'Pendiente',
+                    currency: plan.currency || 'ARS',
+                    originalAmount: native,
+                    is_provisional: 0,
+                    paymentMethod: 'Transferencia',
+                    cardName: null,
+                });
+            }
+        } else if (isParticipant) {
+            virtuals.push({
+                id: `shared-${plan.id}-${userId}-${monthYear}`,
+                name: `${plan.description} (Pago · cuota ${currentNum}/${count})`,
+                amount: ars,
+                category: 'Gastos Compartidos',
+                tag: 'A pagar',
+                date: `${monthYear}-01`,
+                status: 'Pendiente',
+                currency: plan.currency || 'ARS',
+                originalAmount: native,
+                is_provisional: 0,
+                paymentMethod: 'Transferencia',
+                cardName: null,
+            });
+        }
+    }
+    return virtuals;
+}
+
+async function tgHandleQueryEntries(
+    db: D1Database, userId: string, arg: string
+): Promise<string> {
+    const monthYear = tgParseMonthArg(arg);
+    if (!monthYear) {
+        return '⚠️ No entendí el mes. Probá:\n· /registros\n· /registros abril\n· /registros abril 2026\n· /registros 2026-04';
+    }
+
+    // Cargo el primer nombre del usuario para el "RESULTADO FINAL" de Gastos
+    // Compartidos. Si falla cae al username, y si todo falla a "Vos".
+    let firstName = 'Vos';
+    try {
+        const u = await db.prepare('SELECT firstName, username FROM users WHERE id = ?').bind(userId).first<any>();
+        if (u) firstName = (u.firstName || u.username || 'Vos').toString();
+    } catch {}
+
+    let result: any;
+    try {
+        result = await db.prepare(
+            'SELECT id, name, amount, category, tag, date, status, currency, originalAmount, is_provisional, paymentMethod, cardName FROM entries WHERE user_id = ? AND month_year = ? AND (deleted IS NULL OR deleted = 0) ORDER BY category, date, name'
+        ).bind(userId, monthYear).all();
+    } catch (e: any) {
+        return `❌ Error consultando la base: ${e?.message || 'desconocido'}`;
+    }
+
+    // Separamos las rows en 3 grupos:
+    //  - rawEntries: las "reales" (sin prefijo virtual)
+    //  - zombieInstByBaseId: rows `inst-{base}-{yyyy-mm}` indexados por base_id,
+    //    los reusamos como fuente de verdad si existe el plan en installments
+    //  - card-agg-* / shared-* / virt-* / income-from-shared-*: descartados,
+    //    el frontend los recalcula al vuelo
+    const rawEntries: any[] = [];
+    const zombieInstByBaseId: Record<string, any> = {};
+    for (const e of (result?.results || []) as any[]) {
+        const id = String(e.id || '');
+        if (id.startsWith('inst-')) {
+            // Formato: inst-{base_id}-{yyyy-mm}. Recuperamos base_id quitando el sufijo.
+            const m = id.match(/^inst-(.+)-(\d{4}-\d{2})$/);
+            if (m) zombieInstByBaseId[m[1]] = e;
+        } else if (!tgIsVirtualId(id)) {
+            rawEntries.push(e);
+        }
+    }
+    const installmentVirtuals = await tgFetchInstallmentVirtuals(db, userId, monthYear, zombieInstByBaseId);
+    const sharedVirtuals = await tgFetchSharedVirtuals(db, userId, monthYear);
+
+    // Agrupador de consumos de tarjeta. Separa entries con paymentMethod=Crédito
+    // por (cardName, category) y agrega las cuotas instalment como sub-items
+    // de la tarjeta correspondiente, igual que el frontend en App.tsx.
+    type Acc = { cardName: string; category: string; total: number; items: any[] };
+    const accumulator: Record<string, Acc> = {};
+    const nonCardEntries: any[] = [];
+
+    const isCreditMethod = (m: any) => {
+        if (!m) return false;
+        const n = tgNormalize(String(m));
+        return n.includes('credito') || n.includes('credit');
+    };
+
+    const addToAcc = (entry: any, cardName: string) => {
+        const card = (cardName || 'Otros').trim();
+        const cat = entry.category || 'Gastos Variables';
+        const key = `${card.toUpperCase()}-${cat}`;
+        if (!accumulator[key]) accumulator[key] = { cardName: card, category: cat, total: 0, items: [] };
+        accumulator[key].items.push(entry);
+        if (cat !== 'Ingresos') accumulator[key].total += (entry.amount || 0);
+    };
+
+    for (const e of rawEntries) {
+        if (isCreditMethod(e.paymentMethod) && e.category !== 'Ingresos') {
+            addToAcc(e, e.cardName || 'Otros');
+        } else {
+            nonCardEntries.push(e);
+        }
+    }
+    for (const v of installmentVirtuals) {
+        addToAcc(v, v.cardName || 'Otros');
+    }
+
+    // Convertir grupos en entries "padre" con subEntries.
+    const cardAggregations: any[] = [];
+    for (const key of Object.keys(accumulator)) {
+        const a = accumulator[key];
+        const label =
+            a.category === 'Gastos Fijos' ? ' (Fijos)' :
+            a.category === 'Gastos Variables' ? ' (Variables)' :
+            a.category === 'Deudas' ? ' (Deudas)' :
+            a.category === 'Ahorros' ? ' (Ahorros)' :
+            a.category === 'Gastos Compartidos' ? ' (Compartidos)' :
+            '';
+        cardAggregations.push({
+            id: `tg-card-agg-${a.cardName}-${a.category}`,
+            name: a.cardName === 'Otros' ? `Consumo Tarjeta${label}` : `Consumo ${a.cardName}${label}`,
+            amount: a.total,
+            category: a.category,
+            tag: 'Tarjeta de Crédito',
+            date: monthYear + '-01',
+            status: 'Pendiente',
+            currency: 'ARS',
+            originalAmount: null,
+            is_provisional: 0,
+            subEntries: a.items,
+        });
+    }
+
+    const entries: any[] = [...nonCardEntries, ...cardAggregations, ...sharedVirtuals];
+    const [year, month] = monthYear.split('-');
+    const monthLabel = `${TG_MONTH_LABEL[month] || month} ${year}`;
+
+    if (entries.length === 0) {
+        return `📊 Sin movimientos en ${monthLabel}.`;
+    }
+
+    const byCat: Record<string, any[]> = {};
+    let totalIncome = 0;
+    let totalExpense = 0;
+    let pendingCount = 0;
+    for (const e of entries) {
+        const cat = e.category || 'Otros';
+        if (!byCat[cat]) byCat[cat] = [];
+        byCat[cat].push(e);
+        const amt = e.amount || 0;
+        if (cat === 'Ingresos') {
+            totalIncome += amt;
+        } else if (cat !== 'Gastos Compartidos') {
+            // Gastos Compartidos NO entran al total — la web los muestra aparte
+            // porque son neutros (lo que pagás te lo cobran después). El balance
+            // del mes ignora la categoría completa, igual que la app web.
+            totalExpense += amt;
+        }
+        if (e.is_provisional) pendingCount++;
+    }
+
+    const balance = totalIncome - totalExpense;
+    const SEP = '=======================================';
+    const lines: string[] = [];
+
+    // Header + resumen (sin separador entre ellos)
+    lines.push(`📊 Movimientos · ${monthLabel}`);
+    lines.push(`Total: ${entries.length} movimiento${entries.length === 1 ? '' : 's'}`);
+    lines.push('');
+    lines.push(`💰 Ingresos: $${fmtMoney(totalIncome)}`);
+    lines.push(`💸 Gastos:   $${fmtMoney(totalExpense)}`);
+    lines.push(`${balance >= 0 ? '🟢' : '🔴'} Balance:  ${balance >= 0 ? '+' : ''}$${fmtMoney(balance)}`);
+    if (pendingCount > 0) {
+        lines.push(`🟡 ${pendingCount} pendiente${pendingCount === 1 ? '' : 's'} de revisión`);
+    }
+    lines.push('');
+
+    const orderedCats = [
+        ...TG_CATEGORY_ORDER.filter(c => byCat[c]),
+        ...Object.keys(byCat).filter(c => !TG_CATEGORY_ORDER.includes(c)),
+    ];
+
+    // Cada categoría va precedida por separador (excepto que sea la primera).
+    let firstCat = true;
+    for (const cat of orderedCats) {
+        if (!firstCat) {
+            lines.push('');
+        }
+        lines.push(SEP);
+        lines.push('');
+        firstCat = false;
+
+        const items = byCat[cat];
+        const subtotal = items.reduce((s, e) => s + (e.amount || 0), 0);
+        const emoji = TG_CATEGORY_EMOJI[cat] || '•';
+        lines.push(`━━━ ${emoji} ${cat.toUpperCase()} (${items.length}) · $${fmtMoney(subtotal)}`);
+        lines.push('');
+        for (const e of items) {
+            lines.push(tgFormatEntry(e));
+            lines.push('');
+        }
+
+        // Para Gastos Compartidos, agregamos el "RESULTADO FINAL" estilo web:
+        // suma neta = a pagar (positivo) - a cobrar (negativo). Decide si el
+        // usuario tiene que pagar, cobrar o está al día.
+        if (cat === 'Gastos Compartidos') {
+            const net = items.reduce((s: number, e: any) => s + (e.amount || 0), 0);
+            const nameUpper = firstName.toUpperCase();
+            lines.push('📌 RESULTADO FINAL');
+            if (Math.abs(net) < 0.01) {
+                lines.push(`   ${nameUpper} ESTÁ AL DÍA`);
+            } else if (net > 0) {
+                lines.push(`   ${nameUpper} TIENE QUE PAGAR $${fmtMoney(net)}`);
+            } else {
+                lines.push(`   ${nameUpper} TIENE QUE COBRAR $${fmtMoney(-net)}`);
+            }
+            lines.push('');
+        }
+    }
+
+    lines.push('Leyenda: ✅ pagado · ⏳ pendiente · 🟡 sin revisar · 💳 grupo de tarjeta · 📱 desde Telegram');
+    return lines.join('\n');
+}
+
+app.post('/api/telegram/webhook', async (c) => {
+    let update: any;
+    try {
+        update = await c.req.json();
+    } catch {
+        return c.json({ ok: true });
+    }
+
+    const botToken = c.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+        console.warn('[telegram] TELEGRAM_BOT_TOKEN not set');
+        return c.json({ ok: true });
+    }
+
+    const allowed = c.env.TELEGRAM_ALLOWED_CHAT_ID;
+    const userId = c.env.TELEGRAM_USER_ID;
+
+    // Handler para botones inline (callback queries). Sólo aceptamos del chat
+    // whitelisteado y atendemos los callback_data que arrancan con "reg:".
+    const cbq = update?.callback_query;
+    if (cbq) {
+        const cbChatId = cbq.message?.chat?.id;
+        const cbData: string = cbq.data || '';
+        if (!allowed || String(allowed) !== String(cbChatId)) {
+            await tgAnswerCallback(botToken, cbq.id, 'No autorizado');
+            return c.json({ ok: true });
+        }
+        if (!userId) {
+            await tgAnswerCallback(botToken, cbq.id, 'Bot mal configurado');
+            return c.json({ ok: true });
+        }
+        if (cbData.startsWith('reg:')) {
+            const monthArg = cbData.slice(4);
+            await tgAnswerCallback(botToken, cbq.id, 'Buscando...');
+            try {
+                const reply = await tgHandleQueryEntries(c.env.DB, userId, monthArg);
+                await tgSend(botToken, cbChatId, reply);
+            } catch (e: any) {
+                console.error('[telegram] callback handler error', e);
+                await tgSend(botToken, cbChatId, `❌ Error: ${e?.message || 'desconocido'}`);
+            }
+        } else {
+            await tgAnswerCallback(botToken, cbq.id);
+        }
+        return c.json({ ok: true });
+    }
+
+    const message = update?.message;
+    const text: string | undefined = message?.text;
+    const chatId = message?.chat?.id;
+    console.log(`[telegram] update keys=${Object.keys(update || {}).join(',')} chat_id=${chatId} text=${text?.substring(0, 60)}`);
+    if (!message || !text || chatId === undefined) {
+        console.log('[telegram] skipping non-text update');
+        return c.json({ ok: true });
+    }
+
+    // Bootstrap: si todavía no hay whitelist, devolvemos el chat_id para que
+    // el dueño lo configure como secret. Nunca procesamos comandos en este modo.
+    if (!allowed || String(allowed) !== String(chatId)) {
+        console.log(`[telegram] bootstrap reply -> chat_id=${chatId} (allowed=${allowed || 'unset'})`);
+        await tgSend(
+            botToken,
+            chatId,
+            `Nexus Finance Bot\n\nTu chat_id es: ${chatId}\n\nPasaselo al admin para habilitarte.`,
+        );
+        return c.json({ ok: true });
+    }
+
+    if (!userId) {
+        await tgSend(botToken, chatId, '⚠️ Bot mal configurado: falta `TELEGRAM_USER_ID`.');
+        return c.json({ ok: true });
+    }
+
+    try {
+        const trimmed = text.trim();
+        const norm = tgNormalize(trimmed);
+        let reply: string;
+
+        // Cierre de conversación
+        if (/^(\/listo|listo|no|fin|stop|gracias|chau|nada mas|nada más)$/i.test(trimmed)) {
+            reply = '👍 Listo. Cuando quieras seguir cargando, mandame "Gaste ..." o "Ingrese ..."';
+        }
+        // Help
+        else if (norm === '/start' || norm === '/help' || norm === 'help' || norm === 'ayuda' || norm === 'menu') {
+            reply = TG_HELP;
+        }
+        // Query de registros: sin argumento → menú con los 12 meses del año actual.
+        // Con argumento → trae directo (atajo para usuarios que prefieren tipear).
+        else if (/^\s*\/(?:registros|movimientos|mes)\b/i.test(trimmed)) {
+            const arg = trimmed.replace(/^\s*\/(?:registros|movimientos|mes)\b/i, '').trim();
+            if (!arg) {
+                const year = new Date().getFullYear();
+                const kb = tgBuildMonthKeyboard(year);
+                await tgSend(
+                    botToken,
+                    chatId,
+                    `📅 Elegí el mes de ${year} para ver los movimientos:`,
+                    kb,
+                );
+                return c.json({ ok: true });
+            }
+            reply = await tgHandleQueryEntries(c.env.DB, userId, arg);
+        }
+        // Trigger gasto: "Gaste ...", "Gasté ...", "/gasto ..." (legacy)
+        else {
+            const expMatch = trimmed.match(/^\s*(?:gast(?:e|é)|\/gasto)\s+(.+)/is);
+            const incMatch = trimmed.match(/^\s*(?:ingres(?:e|é)|cobr(?:e|é)|\/ingreso)\s+(.+)/is);
+            if (expMatch) {
+                reply = await tgHandleAddCommand(c.env.DB, userId, expMatch[1], false);
+            } else if (incMatch) {
+                reply = await tgHandleAddCommand(c.env.DB, userId, incMatch[1], true);
+            } else {
+                reply = '❓ No te entendí. Probá: "Gaste 15000 super milanesas" o /help.';
+            }
+        }
+
+        await tgSend(botToken, chatId, reply);
+    } catch (e: any) {
+        console.error('[telegram] handler error', e);
+        await tgSend(botToken, chatId, `❌ Error: ${e?.message || 'desconocido'}`);
+    }
+
+    return c.json({ ok: true });
 });
 
 export default app;
